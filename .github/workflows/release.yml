@@ -1,0 +1,127 @@
+name: Create Release Installer
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    
+    steps:
+      # 1. アーキテクチャを取得
+      - name: Get Runner Architecture
+        id: get_arch
+        run: |
+          $arch = if ("${{ runner.arch }}" -eq "X64") { "x64" } else { "x86" }
+          echo "ARCH=$arch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+        
+      # 2. リポジトリのソースコードをチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 3. config.py からアプリ設定を読み込む
+      - name: Load App Config from config.py
+        id: load_config
+        run: |
+          $config = Get-Content -Path "config.py" -Encoding utf8
+          
+          $internalName = ($config | Select-String -Pattern "APP_INTERNAL_NAME = ('|"")(.+?)\1").Matches.Groups[2].Value
+          $displayName = ($config | Select-String -Pattern "APP_NAME = ('|"")(.+?)\1").Matches.Groups[2].Value
+
+          echo "APP_INTERNAL_NAME=$internalName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "APP_DISPLAY_NAME=$displayName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      # 4. Python をセットアップ
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 5. Python の依存関係をインストール
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # 6. Inno Setup を Winget でインストール
+      - name: Install Inno Setup via Winget
+        run: winget install --id JRSoftware.InnoSetup -e --accept-source-agreements --accept-package-agreements
+    
+      # 7. Inno Setup を PATH に追加
+      - name: Find and Add Inno Setup to PATH
+        run: |
+          $searchPaths = "C:\Program Files", "C:\Program Files (x86)", "$env:LOCALAPPDATA"
+          echo "Searching for iscc.exe in the following locations: $searchPaths"
+
+          $isccPath = (Get-ChildItem -Path $searchPaths -Recurse -Filter "iscc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).Directory.FullName
+          
+          if ($isccPath) {
+            echo "Success! Found Inno Setup at: $isccPath"
+            echo $isccPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            echo "FATAL Error: iscc.exe was not found in any standard location after installation."
+            echo "Listing contents of $env:LOCALAPPDATA\Programs ..."
+            Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue
+            exit 1
+          }
+        shell: pwsh
+
+      # 8. config.py からインストーラー用のテキストを抽出
+      - name: Extract text for installer
+        run: |
+          python -c "import config; \
+          f_warn = open('warning.txt', 'w', encoding='utf-8'); \
+          f_warn.write(config.WARNING_TEXT); \
+          f_warn.close(); \
+          f_disc = open('disclaimer.txt', 'w', encoding='utf-8'); \
+          f_disc.write(config.DISCLAIMER_TEXT); \
+          f_disc.close()"
+
+      # 9. バージョン番号を Release タグから取得
+      - name: Set version from release tag
+        run: |
+          $VERSION = "${{ github.ref_name }}".TrimStart("v")
+          echo "APP_VERSION=$VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      # 10. ビルド前に config.py のバージョンを更新
+      - name: Update AppVersion in config.py
+        run: |
+          (Get-Content -Path "config.py" -Raw) -replace "APP_VERSION = .*", "APP_VERSION = '${{ env.APP_VERSION }}'" | Set-Content -Path "config.py" -Encoding utf8
+        shell: pwsh
+
+      # 11. PyInstaller でビルド
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $py = 'import json, pathlib, PySide6; ' +
+                'root=(pathlib.Path(PySide6.__file__).parent/"plugins"); ' +
+                'print(json.dumps({"platforms":str(root/"platforms"),"imageformats":str(root/"imageformats")}))'
+          $p = (python -c $py | ConvertFrom-Json)
+
+          pyinstaller --noconfirm --onedir --clean --windowed `
+            --name ${{ env.APP_INTERNAL_NAME }} `
+            --icon assets\app_icon.ico `
+            --add-data "assets;assets" `
+            --add-binary "$($p.platforms)\qwindows.dll;PySide6/plugins/platforms" `
+            --add-binary "$($p.imageformats)\qjpeg.dll;PySide6/plugins/imageformats" `
+            --hidden-import PIL.ImageQt `
+            --hidden-import PIL.PngImagePlugin `
+            --hidden-import PIL.JpegImagePlugin `
+            --collect-binaries fitz `
+            main.py
+    
+      # 12. Inno Setup でインストーラーを作成
+      - name: Build Installer
+        run: |
+          iscc.exe /DAppVersion=${{ env.APP_VERSION }} /DAppInternalName=${{ env.APP_INTERNAL_NAME }} /DAppName="${{ env.APP_DISPLAY_NAME }}" /DArch=${{ env.ARCH }} "setup.iss"
+
+      # 13. リリースアセットをアップロード
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./Output/${{ env.APP_INTERNAL_NAME }}-${{ env.APP_VERSION }}-${{ env.ARCH }}-setup.exe
