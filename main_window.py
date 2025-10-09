@@ -16,8 +16,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QListWidgetItem, QLabel,
     QFileDialog, QMessageBox,
-    QDialog, QTextBrowser, QDialogButtonBox, QTextEdit,
-    QMenu, QVBoxLayout, QPushButton
+    QDialog, QTextBrowser, QDialogButtonBox,
+    QVBoxLayout, QPushButton
 )
 
 from models import Project, Page
@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self.act_open.triggered.connect(self._open_project)
         self.act_save.triggered.connect(self._save_project)
         self.act_export.triggered.connect(self.worker_handler.start_export)
+        self.act_export_assets.triggered.connect(self._export_assets)
         self.act_quit.triggered.connect(self.close)
         self.act_rescan_devices.triggered.connect(self.recorder_handler.setup_audio_devices)
         self.act_show_debug_console.triggered.connect(self._show_debug_console)
@@ -499,6 +500,7 @@ class MainWindow(QMainWindow):
         can_interact_project = is_idle
         can_export = can_interact_project and self._ffmpeg_is_available
         can_save = self._is_dirty and can_interact_project
+        can_export_assets = can_interact_project and self._project_zip_path is not None and not self._is_dirty
 
         if hasattr(self, 'left_widget'):
             self.left_widget.setEnabled(can_interact_project)
@@ -525,6 +527,7 @@ class MainWindow(QMainWindow):
         self.act_open.setEnabled(can_interact_project)
         self.act_save.setEnabled(can_save)
         self.act_export.setEnabled(can_export)
+        self.act_export_assets.setEnabled(can_export_assets)
         
         if can_interact_project:
             self._update_contextual_buttons()
@@ -698,6 +701,112 @@ class MainWindow(QMainWindow):
         
         print("Discarding unsaved changes.")
         return True
+
+    @Slot()
+    def _export_assets(self):
+        if not self._project_zip_path or self._is_dirty:
+            QMessageBox.information(
+                self,
+                "素材ファイルのエクスポート",
+                "この機能を利用するには、まずプロジェクトを保存し、\n"
+                "未保存の変更がない状態にしてください。"
+            )
+            return
+
+        if not self._project or not self._project.pages:
+            QMessageBox.warning(self, "エクスポートエラー", "プロジェクトにエクスポート対象のページがありません。")
+            return
+
+        documents_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        base_dir_str = QFileDialog.getExistingDirectory(
+            self,
+            "素材のエクスポート先フォルダを選択",
+            documents_path
+        )
+
+        if not base_dir_str:
+            self.statusBar().showMessage("エクスポートがキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
+            return
+
+        project_basename = Path(self._project_zip_path).stem
+        dest_dir = Path(base_dir_str) / project_basename
+        
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "フォルダ作成エラー", f"エクスポート用フォルダの作成に失敗しました:\n{dest_dir}\n\n詳細: {e}")
+            return
+        
+        self._set_ui_state("processing")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.statusBar().showMessage("素材ファイルをエクスポート中...", 0)
+
+        exported_count = 0
+        error_messages = []
+
+        try:
+            for index, page in enumerate(self._project.pages):
+                page_number = index + 1
+                
+                if page.image:
+                    source_image_path = self._work_dir / page.image
+                    if source_image_path.exists():
+                        try:
+                            ext = source_image_path.suffix
+                            dest_image_name = f"ページ{page_number}{ext}"
+                            dest_image_path = dest_dir / dest_image_name
+                            shutil.copy2(source_image_path, dest_image_path)
+                            exported_count += 1
+                        except (IOError, OSError) as e:
+                            err_msg = f"・ページ{page_number}の画像 ({source_image_path.name}) のコピーに失敗: {e}"
+                            print(f"ERROR: {err_msg}")
+                            error_messages.append(err_msg)
+                    else:
+                        print(f"WARN: Image file not found for page {page_number}: {source_image_path}")
+
+                if page.audio and page.duration and page.duration > MIN_AUDIO_DURATION_SEC:
+                    source_audio_path = self._work_dir / page.audio
+                    if source_audio_path.exists():
+                        try:
+                            dest_audio_name = f"ページ{page_number}.wav"
+                            dest_audio_path = dest_dir / dest_audio_name
+                            shutil.copy2(source_audio_path, dest_audio_path)
+                            exported_count += 1
+                        except (IOError, OSError) as e:
+                            err_msg = f"・ページ{page_number}の音声 ({source_audio_path.name}) のコピーに失敗: {e}"
+                            print(f"ERROR: {err_msg}")
+                            error_messages.append(err_msg)
+                    else:
+                         print(f"WARN: Audio file not found for page {page_number}: {source_audio_path}")
+            
+            if not error_messages:
+                QMessageBox.information(
+                    self,
+                    "エクスポート完了",
+                    f"{exported_count}個の素材ファイルのエクスポートが完了しました。\n"
+                    f"出力先: {dest_dir}"
+                )
+            else:
+                summary = (
+                    f"{exported_count}個のファイルは正常にエクスポートされましたが、"
+                    f"{len(error_messages)}件のエラーが発生しました。"
+                )
+                details = "\n".join(error_messages)
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Warning)
+                msg_box.setWindowTitle("エクスポート完了（一部エラーあり）")
+                msg_box.setText(summary)
+                msg_box.setInformativeText(details)
+                msg_box.exec()
+
+        except Exception as e:
+            QMessageBox.critical(self, "エクスポート失敗", f"予期せぬエラーが発生しました:\n{e}")
+            print(f"FATAL ERROR: Failed to export assets: {e}")
+            traceback.print_exc()
+        finally:
+            QApplication.restoreOverrideCursor()
+            self._set_ui_state("idle")
+            self.statusBar().showMessage("エクスポート完了", STATUS_BAR_SAVE_MSG_DURATION_MS)
 
     def _open_homepage(self):
         print(f"Opening homepage: {HOMEPAGE_URL}")

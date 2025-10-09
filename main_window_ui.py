@@ -147,6 +147,7 @@ class UiBuilder:
         main_win.act_open = QAction("プロジェクトを開く...", main_win)
         main_win.act_save = QAction("プロジェクトを保存", main_win)
         main_win.act_export = QAction("動画を書き出す...", main_win)
+        main_win.act_export_assets = QAction("素材ファイルのエクスポート...", main_win)
         main_win.act_quit = QAction("終了", main_win)
         
         m_file.addAction(main_win.act_new)
@@ -154,6 +155,7 @@ class UiBuilder:
         m_file.addAction(main_win.act_save)
         m_file.addSeparator()
         m_file.addAction(main_win.act_export)
+        m_file.addAction(main_win.act_export_assets)
         m_file.addSeparator()
         m_file.addAction(main_win.act_quit)
 
