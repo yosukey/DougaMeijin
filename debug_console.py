@@ -1,6 +1,6 @@
 # debug_console.py
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QTextBrowser, 
+    QDialog, QVBoxLayout, QPlainTextEdit,
     QDialogButtonBox, QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Slot, Qt, QEvent
@@ -19,7 +19,7 @@ class DebugConsoleDialog(QDialog):
 
         layout = QVBoxLayout(self)
         
-        self.text_browser = QTextBrowser(self)
+        self.text_browser = QPlainTextEdit(self)
         self.text_browser.setReadOnly(True)
         layout.addWidget(self.text_browser)
 
@@ -36,7 +36,7 @@ class DebugConsoleDialog(QDialog):
 
     @Slot(str)
     def append_text(self, text: str):
-        self.text_browser.append(text)
+        self.text_browser.appendPlainText(text)
 
     def _save_log_to_file(self):
         

@@ -306,9 +306,9 @@ def get_directory_uncompressed_size(dir_path: Path) -> int:
     total_size = 0
     try:
         for entry in os.scandir(dir_path):
-            if entry.is_file():
-                total_size += entry.stat().st_size
-            elif entry.is_dir():
+            if entry.is_file(follow_symlinks=False):
+                total_size += entry.stat(follow_symlinks=False).st_size
+            elif entry.is_dir(follow_symlinks=False):
                 total_size += get_directory_uncompressed_size(Path(entry.path))
     except (FileNotFoundError, OSError) as e:
         print(f"Could not calculate directory size for {dir_path}. Reason: {e}")
