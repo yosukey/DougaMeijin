@@ -106,21 +106,10 @@ class AudioImportWorker(QObject):
         temp_wav_path = self.target_wav_path.with_suffix(".wav.tmp")
         
         try:
-            stream_info, error_msg = get_audio_stream_info(str(self.source_path))
-            if error_msg:
-                raise RuntimeError(error_msg)
-            
-            duration = float(stream_info.get("duration", 0))
-            
-            if duration <= MIN_AUDIO_DURATION_SEC:
-                raise RuntimeError(f"音声ファイルが無音または無効です。")
-            
-            if duration < MIN_RECORDING_DURATION_SEC:
-                raise RuntimeError(f"音声ファイルが短すぎます。{MIN_RECORDING_DURATION_SEC:.1f}秒以上のファイルが必要です。")
-            
             if not resample_audio(str(self.source_path), str(temp_wav_path), int(AUDIO_RATE)):
-                sample_rate = stream_info.get('sample_rate', 'N/A')
-                codec_name = stream_info.get('codec_name', 'N/A')
+                stream_info, _ = get_audio_stream_info(str(self.source_path))
+                codec_name = stream_info.get('codec_name', '不明') if stream_info else '不明'
+                sample_rate = stream_info.get('sample_rate', 'N/A') if stream_info else 'N/A'
                 error_detail = (
                     f"音声ファイルの変換に失敗しました。\n\n"
                     f"ファイル情報: コーデック={codec_name}, サンプルレート={sample_rate}Hz\n\n"
@@ -129,8 +118,13 @@ class AudioImportWorker(QObject):
                 raise RuntimeError(error_detail)
             
             final_duration = audio_duration_seconds(str(temp_wav_path))
+
+            if final_duration < MIN_RECORDING_DURATION_SEC:
+                raise RuntimeError(f"音声ファイルが短すぎます。{MIN_RECORDING_DURATION_SEC:.1f}秒以上のファイルが必要です。（検出された長さ: {final_duration:.2f}秒）")
+
             if final_duration <= MIN_AUDIO_DURATION_SEC:
-                 raise RuntimeError("音声処理後に有効な音声データを取得できませんでした。")
+                 raise RuntimeError(f"音声処理後に有効な音声データを取得できませんでした。（検出された長さ: {final_duration:.2f}秒）")
+
 
             if self.target_wav_path.exists():
                 self.target_wav_path.unlink()
@@ -360,5 +354,4 @@ class FFmpegDownloadWorker(QObject):
                              message += ")"
                         self.progress.emit(downloaded, total_size, message)
             except OSError as e:
-                # --- Handle disk space error during write (post-check) ---
                 raise IOError(f"ファイルの書き込みに失敗しました。ディスクの空き容量が不足している可能性があります。\n詳細: {e}")

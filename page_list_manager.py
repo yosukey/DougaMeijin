@@ -114,7 +114,12 @@ class PageListManager:
         
         print(f"Reordering pages: Moving item from index {start} to {row}")
         moved_page = main._project.pages.pop(start)
-        main._project.pages.insert(row, moved_page)
+
+        insert_index = row
+        if row > start:
+            insert_index -= 1
+        
+        main._project.pages.insert(insert_index, moved_page)
 
         main._mark_as_dirty()
         

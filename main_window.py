@@ -448,7 +448,6 @@ class MainWindow(QMainWindow):
             print(f"FFmpeg is available at: {path}")
             self._ffmpeg_is_available = True
             
-            self._ready_to_show = True
         else:
             print("FFmpeg not found. Launching downloader.")
             downloader_dialog = FFmpegDownloaderDialog(self)

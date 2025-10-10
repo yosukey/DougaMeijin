@@ -59,7 +59,7 @@ class AudioSessionManager:
         }
 
         try:
-            if page.audio and page.duration:
+            if page.audio:
                 old_audio_abs_path = self._work_dir / page.audio
                 if old_audio_abs_path.exists():
                     backup_path = target_abs_path.with_suffix(f".{uuid.uuid4().hex}.bak")

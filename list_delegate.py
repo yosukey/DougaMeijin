@@ -6,8 +6,7 @@ from PySide6.QtWidgets import QApplication, QStyledItemDelegate, QStyle, QStyleO
 class RichTextDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._emoji_font_cache = QFont()
-        self._base_font_size_cache = 0
+        self._overlay_font_cache = {}
 
     def get_overlay_font(self, base_font: QFont) -> QFont:
         base_size = base_font.pointSizeF()
@@ -16,17 +15,18 @@ class RichTextDelegate(QStyledItemDelegate):
         elif base_size <= 0:
              base_size = 16
 
-        if self._base_font_size_cache == base_size:
-            return self._emoji_font_cache
+        if base_size in self._overlay_font_cache:
+            return self._overlay_font_cache[base_size]
 
         target_pt_size = max(base_size * 1.5, 18.0)
         
-        self._emoji_font_cache = QFont(base_font)
-        self._emoji_font_cache.setPointSizeF(target_pt_size)
-        self._emoji_font_cache.setBold(True)
-        self._base_font_size_cache = base_size
+        overlay_font = QFont(["Segoe UI Emoji", "Meiryo"])
+        overlay_font.setPointSizeF(target_pt_size)
+        overlay_font.setBold(True)
         
-        return self._emoji_font_cache
+        self._overlay_font_cache[base_size] = overlay_font
+        
+        return overlay_font
 
     def paint(self, painter, option, index):
         options = QStyleOptionViewItem(option)

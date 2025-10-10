@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import time
 import zipfile
 from typing import List
 from PIL import Image, ImageOps, ImageFile
@@ -16,7 +17,7 @@ from config import (
     MAX_IMAGE_PIXELS,
     COLLISION_RETRY_LIMIT, MASTER_IMAGE_FORMAT_NAME, MASTER_IMAGE_EXTENSION,
     PDF_RENDER_DPI, DIR_IMAGES, DIR_THUMBNAILS, PROJECT_FILENAME,
-    MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES
+    MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES, DIR_WAVEFORMS
 )
 import fitz
 from config import DEFAULT_RESOLUTION, DEFAULT_FPS
@@ -262,8 +263,12 @@ def save_project_to_zip(work_dir: str, project: Project, zip_path: str):
         json.dump(d, f, ensure_ascii=False, indent=2)
     
     try:
+        excluded_dirs = {DIR_WAVEFORMS}
+
         with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for root, _, files in os.walk(work_dir_path):
+            for root, dirs, files in os.walk(work_dir_path):
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                
                 root_path = Path(root)
                 for file in files:
                     file_path = root_path / file
@@ -283,7 +288,23 @@ def save_project_to_zip(work_dir: str, project: Project, zip_path: str):
 def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = False) -> Project:
     work_dir_path = Path(work_dir)
     if work_dir_path.exists():
-        shutil.rmtree(work_dir_path)
+        attempts = 5
+        for i in range(attempts):
+            try:
+                shutil.rmtree(work_dir_path)
+                break 
+            except OSError as e:
+                print(f"WARN: Attempt {i+1}/{attempts} to remove old work directory failed: {e}")
+                if i < attempts - 1:
+                    time.sleep(0.2)
+                else:
+                    raise IOError(
+                        "以前のプロジェクトの一時フォルダのクリーンアップに失敗しました。\n\n"
+                        f"フォルダ '{work_dir_path}' を削除できませんでした。\n"
+                        "ウイルス対策ソフトや他のプログラムがフォルダにアクセスしている可能性があります。\n\n"
+                        "不要なプログラムを終了するか、PCを再起動してから再度お試しください。"
+                    ) from e
+
     _ensure_dir(work_dir_path)
 
     with zipfile.ZipFile(zip_path, 'r') as zf:
