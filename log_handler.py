@@ -9,7 +9,7 @@ class QtLogHandler(QObject, logging.Handler):
         super().__init__(parent)
         logging.Handler.__init__(self)
         formatter = logging.Formatter(
-            '[%(asctime)s] [%(levelname)s] %(message)s',
+            '[%(asctime)s] [%(levelname)-8s] [%(name)s:%(lineno)d] %(message)s',
             datefmt='%H:%M:%S'
         )
         self.setFormatter(formatter)

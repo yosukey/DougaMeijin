@@ -40,7 +40,7 @@ def setup_logging():
     # 3. Configure a stream handler for console output during development
     console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = logging.Formatter(
-        '[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s',
+        '[%(asctime)s] [%(levelname)-8s] [%(name)s:%(lineno)d] %(message)s',
         datefmt='%H:%M:%S'
     )
     console_handler.setFormatter(console_formatter)
