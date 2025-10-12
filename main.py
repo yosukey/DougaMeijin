@@ -1,23 +1,20 @@
 # main.py
 import sys
-import json
 import ctypes
 import time
 import logging
-from PySide6.QtCore import QTranslator, QLibraryInfo, QUrl, Qt
+from PySide6.QtCore import QTranslator, QLibraryInfo, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QMessageBox, QDialog, QVBoxLayout,
     QLabel, QTextBrowser, QDialogButtonBox
 )
-from PySide6.QtGui import QDesktopServices
 from main_window import MainWindow
 from PIL import Image
 from config import (
     WARNING_TEXT, DISCLAIMER_TEXT, APP_INTERNAL_NAME, APP_VERSION,
-    GITHUB_REPO_ID, PROJECT_FILE_EXTENSION, MAX_IMAGE_PIXELS
+    PROJECT_FILE_EXTENSION, MAX_IMAGE_PIXELS
 )
-from ffmpeg_downloader import check_ffmpeg_exists, FFmpegDownloaderDialog
 from debug_stream import StdStreamHandler
 from logger_setup import setup_logging
 from log_handler import QtLogHandler
@@ -80,10 +77,22 @@ def main():
                 payload = file_path_to_open.encode('utf-8')
                 header = len(payload).to_bytes(8, 'big', signed=False)
                 socket.write(header + payload)
-                socket.flush()
-
-                if not socket.waitForReadyRead(2000):
-                    logging.warning("Primary instance did not acknowledge file open.")
+                
+                if not socket.waitForBytesWritten(2000):
+                    logging.error("Failed to write data to the primary instance's socket.")
+                else:
+                    if not socket.waitForReadyRead(2000):
+                        logging.warning("Primary instance did not acknowledge file open within the timeout period.")
+                    else:
+                        response = socket.readAll().data()
+                        if response == b'ack':
+                            logging.info("Primary instance acknowledged the file open.")
+                        else:
+                            logging.warning(f"Received unexpected response from primary instance: {response!r}")
+            else:
+                logging.warning(
+                    f"Ignoring command line argument: '{file_path_to_open}' is not a valid project file ({PROJECT_FILE_EXTENSION})."
+                )
 
         socket.disconnectFromServer()
         logging.info("Secondary instance exiting.")
@@ -112,6 +121,8 @@ def main():
             logging.info("User did not accept agreement. Exiting.")
             sys.exit(0)
         
+        MAX_PAYLOAD_SIZE = 4096
+        
         def handle_new_connection():
             client_connection = server.nextPendingConnection()
             logging.info("New client connection detected (secondary instance startup).")
@@ -119,35 +130,48 @@ def main():
             client_connection.disconnected.connect(client_connection.deleteLater)
 
             expected_payload_size = 0
-            received_payload = b''
+            received_payload_buffer = b''
 
             def read_from_socket():
-                nonlocal expected_payload_size, received_payload
+                nonlocal expected_payload_size, received_payload_buffer
                 
-                if expected_payload_size == 0:
-                    if client_connection.bytesAvailable() < 8:
-                        return
-                    header = client_connection.read(8)
-                    expected_payload_size = int.from_bytes(header, 'big', signed=False)
-                
-                if client_connection.bytesAvailable() > 0:
-                    received_payload += client_connection.readAll()
+                received_payload_buffer += client_connection.readAll()
 
-                if len(received_payload) >= expected_payload_size:
-                    actual_payload = received_payload[:expected_payload_size]
-                    
-                    try:
-                        file_path = actual_payload.decode('utf-8')
-                        if file_path:
-                            logging.info(f"Received complete file path: {file_path}")
-                            win.open_project_from_path(file_path)
-                    except UnicodeDecodeError:
-                        logging.error(f"Failed to decode received path bytes.")
+                while True:
+                    if expected_payload_size == 0:
+                        if len(received_payload_buffer) < 8:
+                            return
+                        
+                        header = received_payload_buffer[:8]
+                        received_payload_buffer = received_payload_buffer[8:]
+                        expected_payload_size = int.from_bytes(header, 'big', signed=False)
 
-                    win.bring_to_front()
-                    client_connection.write(b'ack')
-                    client_connection.flush()
-                    client_connection.disconnectFromServer()
+                        if expected_payload_size > MAX_PAYLOAD_SIZE:
+                            logging.error(f"Received oversized payload header ({expected_payload_size} bytes). Closing connection.")
+                            client_connection.close()
+                            return
+
+                    if len(received_payload_buffer) >= expected_payload_size:
+                        actual_payload = received_payload_buffer[:expected_payload_size]
+                        received_payload_buffer = received_payload_buffer[expected_payload_size:]
+                        
+                        try:
+                            file_path = actual_payload.decode('utf-8')
+                            if file_path:
+                                logging.info(f"Received complete file path: {file_path}")
+                                win.open_project_from_path(file_path)
+                        except UnicodeDecodeError:
+                            logging.error(
+                                f"Failed to decode received path bytes. Raw data (hex): {actual_payload.hex()}"
+                            )
+                        win.bring_to_front()
+                        client_connection.write(b'ack')
+                        
+                        client_connection.close()
+                        
+                        expected_payload_size = 0
+                    else:
+                        break
 
             client_connection.readyRead.connect(read_from_socket)
 

@@ -1,18 +1,13 @@
 # audio_handlers.py
-import os
 import shutil
-import wave
 import uuid
 import logging
 from typing import Optional
 from pathlib import Path
-from PySide6.QtCore import QObject, QUrl, QTimer, QElapsedTimer, Signal, Qt, Slot
+from PySide6.QtCore import QObject, QUrl, QTimer, QElapsedTimer, Qt, Slot
 from PySide6.QtMultimedia import (
     QAudioDevice,
-    QAudioSource,
     QMediaDevices,
-    QAudioFormat,
-    QAudio,
     QMediaPlayer,
     QAudioOutput
 )
