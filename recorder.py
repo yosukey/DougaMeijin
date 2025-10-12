@@ -1,6 +1,7 @@
 # recorder.py
 import wave
 import os
+import logging
 from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
 from PySide6.QtMultimedia import (
     QAudioDevice,
@@ -11,6 +12,8 @@ from PySide6.QtMultimedia import (
 )
 import numpy as np
 from config import RECORDER_PREFERRED_RATES
+
+logger = logging.getLogger(__name__)
 
 class AudioRecorder(QObject):
     started = Signal()
@@ -73,7 +76,7 @@ class AudioRecorder(QObject):
                     else:
                         bit_depth_desc = "Int16"
                     
-                    print(f"Audio format selected: {rate} Hz, {bit_depth_desc} Mono (will be saved as 16-bit PCM)")
+                    logger.info(f"Audio format selected: {rate} Hz, {bit_depth_desc} Mono (will be saved as 16-bit PCM)")
                     break
             if supported_format_found:
                 break
@@ -233,14 +236,14 @@ class AudioRecorder(QObject):
 
                     self._io_device = original_io_device
         except Exception as e:
-            print(f"Error during final buffer drain: {e}")
+            logger.error(f"Error during final buffer drain: {e}")
         finally:
             self._io_device = None
             if self._output_file:
                 try:
                     self._output_file.close()
                 except IOError as e:
-                     print(f"Error closing raw audio file: {e}")
+                     logger.error(f"Error closing raw audio file: {e}")
                 self._output_file = None
             
         self._write_wav_header()
@@ -248,11 +251,11 @@ class AudioRecorder(QObject):
     def _write_wav_header(self):
         if not os.path.exists(self._raw_path):
             if self._final_path:
-                print(f"Raw file missing, cannot write WAV header: {self._raw_path}")
+                logger.warning(f"Raw file missing, cannot write WAV header: {self._raw_path}")
             return
 
         if os.path.getsize(self._raw_path) == 0:
-            print("No raw data captured, skipping WAV header write.")
+            logger.warning("No raw data captured, skipping WAV header write.")
             try:
                 os.remove(self._raw_path)
             except OSError:
@@ -276,20 +279,20 @@ class AudioRecorder(QObject):
             if os.path.exists(self._raw_path):
                 try:
                     os.remove(self._raw_path)
-                    print(f"Successfully converted and removed temporary raw file: {self._raw_path}")
+                    logger.info(f"Successfully converted and removed temporary raw file: {self._raw_path}")
                 except OSError as e:
-                    print(f"Failed to remove temporary raw file: {e}")
+                    logger.warning(f"Failed to remove temporary raw file: {e}")
 
         except Exception as e:
             self.errorOccurred.emit(f"WAVファイルの保存に失敗しました: {e}")
-            print(f"ERROR: Failed to write WAV file. Raw data left at {self._raw_path} for potential recovery. Reason: {e}")
+            logger.error(f"Failed to write WAV file. Raw data left at {self._raw_path} for potential recovery. Reason: {e}", exc_info=True)
 
             if os.path.exists(self._raw_path):
                 try:
                     os.remove(self._raw_path)
-                    print(f"Cleaned up temporary raw file after error: {self._raw_path}")
+                    logger.info(f"Cleaned up temporary raw file after error: {self._raw_path}")
                 except OSError as cleanup_e:
-                    print(f"Failed to clean up temporary raw file after error: {cleanup_e}")
+                    logger.warning(f"Failed to clean up temporary raw file after error: {cleanup_e}")
 
     def is_recording(self) -> bool:
         return self._is_recording

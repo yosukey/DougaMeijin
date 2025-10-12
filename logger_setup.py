@@ -8,7 +8,7 @@ from PySide6.QtCore import QStandardPaths
 LOG_FILENAME = "error.log"
 
 def setup_logging():
-    # 1. Define log file path in a user-writable directory
+    # 1. Define log file path
     try:
         data_path_str = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
         if not data_path_str:
@@ -21,37 +21,49 @@ def setup_logging():
         print(f"FATAL: Could not create log file directory. Reason: {e}", file=sys.stderr)
         return
 
-    # 2. Configure a rotating file handler for the log
-    handler = logging.handlers.RotatingFileHandler(
+    # 2. Configure a rotating file handler for detailed error logging
+    file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding='utf-8'
     )
-    log_format = (
+    file_format = (
         "--- %(asctime)s ---\n"
         "Level: %(levelname)s\n"
-        "Message: %(message)s\n"
+        "Logger: %(name)s\n"
         "Location: %(pathname)s:%(lineno)d\n"
+        "Message: %(message)s\n"
         "Traceback:\n%(exc_text)s\n"
     )
-    formatter = logging.Formatter(log_format)
-    handler.setFormatter(formatter)
-    
-    # 3. Create a dedicated logger for uncaught exceptions
-    exception_logger = logging.getLogger('unhandled_exception_logger')
-    exception_logger.setLevel(logging.ERROR)
-    exception_logger.addHandler(handler)
+    file_formatter = logging.Formatter(file_format)
+    file_handler.setFormatter(file_formatter)
+    file_handler.setLevel(logging.WARNING)
 
-    # 4. Define the hook function that will be called on an exception
+    # 3. Configure a stream handler for console output during development
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
+
+    # 4. Get the root logger and configure it
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+    # 5. Define the hook for uncaught exceptions
     def handle_exception(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
 
-        exception_logger.error(
+        root_logger.critical(
             "An unhandled exception occurred.", 
             exc_info=(exc_type, exc_value, exc_traceback)
         )
 
-    # 5. Set the custom hook as the global exception handler
+    # 6. Set the custom hook
     sys.excepthook = handle_exception
     
-    print(f"Global exception logging is active. Log file: {log_file}")
+    root_logger.info(f"Global exception logging is active. Log file: {log_file}")

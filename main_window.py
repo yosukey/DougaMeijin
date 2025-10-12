@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import traceback
+import logging
 from typing import Optional, List
 from pathlib import Path
 
@@ -42,6 +43,7 @@ from ffmpeg_downloader import FFmpegDownloaderDialog
 from worker_handler import WorkerHandler
 from page_list_manager import PageListManager
 
+logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -92,8 +94,8 @@ class MainWindow(QMainWindow):
         self._initialization_started = False
 
         self.debug_console = DebugConsoleDialog(self)
-        
-        print("MainWindow initialized. Waiting for initialization signal.")
+
+        logger.info("MainWindow initialized. Waiting for initialization signal.")
 
     def _connect_signals(self):
         # Menu Actions
@@ -140,14 +142,14 @@ class MainWindow(QMainWindow):
 
     def start_initialization(self):
         if self._initialization_started:
-            print("Initialization has already been started. Ignoring duplicate call.")
+            logger.info("Initialization has already been started. Ignoring duplicate call.")
             return
         self._initialization_started = True
         
         self._perform_deferred_initialization()
 
     def _perform_deferred_initialization(self):
-        print("Performing deferred initialization...")
+        logger.info("Performing deferred initialization...")
         self._start_ffmpeg_check()
         self._start_update_check()
         QTimer.singleShot(1500, self._start_audio_initialization)
@@ -185,7 +187,7 @@ class MainWindow(QMainWindow):
             gracefully_shutdown_thread(self.worker_handler.audio_import_thread, "Audio Import", WAIT_TIMEOUT_MS)
 
             if self.worker_handler.export_thread and self.worker_handler.export_thread.isRunning():
-                print("Export is running. Requesting cancellation...")
+                logger.info("Export is running. Requesting cancellation...")
                 if self.worker_handler.export_worker:
                     self.worker_handler.export_worker.request_cancel()
             gracefully_shutdown_thread(self.worker_handler.export_thread, "Export", WAIT_TIMEOUT_MS)
@@ -208,16 +210,12 @@ class MainWindow(QMainWindow):
             event.accept()
 
         except Exception as e:
-            print("--- Unhandled Exception in closeEvent ---")
-            print(f"Error Type: {type(e).__name__}")
-            print(f"Error Message: {e}")
-            traceback.print_exc()
-            print("-----------------------------------------")
+            logger.critical("--- Unhandled Exception in closeEvent ---", exc_info=True)
             event.accept()
 
     @Slot()
     def _initialize_audio_devices(self) -> bool:
-        print("Initializing audio devices...")
+        logger.info("Initializing audio devices...")
         self.combo_audio_input.setEnabled(False)
         self.combo_audio_input.clear()
         self.combo_audio_input.addItem("マイクを検索中...")
@@ -229,8 +227,7 @@ class MainWindow(QMainWindow):
             self.recorder_handler.initialize_devices()
         except Exception as exc:
             init_error = str(exc)
-            print("ERROR: Failed to initialize audio devices.")
-            traceback.print_exc()
+            logger.error("Failed to initialize audio devices.", exc_info=True)
             self.combo_audio_input.clear()
             self.combo_audio_input.addItem("録音デバイスの初期化に失敗しました")
             self.combo_audio_input.setEnabled(False)
@@ -270,14 +267,14 @@ class MainWindow(QMainWindow):
 
         if self._audio_init_retries < MAX_RETRIES:
             self._audio_init_retries += 1
-            print(f"Audio init failed. Retrying in {RETRY_DELAY_MS}ms... (Attempt {self._audio_init_retries}/{MAX_RETRIES})")
+            logger.warning(f"Audio init failed. Retrying in {RETRY_DELAY_MS}ms... (Attempt {self._audio_init_retries}/{MAX_RETRIES})")
             
             self.combo_audio_input.clear()
             self.combo_audio_input.addItem(f"再試行中 ({self._audio_init_retries})...")
             
             QTimer.singleShot(RETRY_DELAY_MS, self._start_audio_initialization)
         else:
-            print("All audio initialization retries failed. Recording will be disabled.")
+            logger.warning("All audio initialization retries failed. Recording will be disabled.")
             self.combo_audio_input.clear()
             self.combo_audio_input.addItem("マイクの初期化に失敗")
             self.combo_audio_input.setToolTip(
@@ -306,11 +303,11 @@ class MainWindow(QMainWindow):
         self.update_worker.error.connect(self.update_worker.deleteLater)
 
         self.update_thread.start()
-        print("Started background update check.")
+        logger.info("Started background update check.")
 
     @Slot(str, str)
     def _on_update_check_finished(self, latest_version: str, release_url: str):
-        print(f"Update check finished. Latest version: {latest_version}, Current: {APP_VERSION}")
+        logger.info(f"Update check finished. Latest version: {latest_version}, Current: {APP_VERSION}")
         if compare_versions(latest_version, APP_VERSION) > 0:
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Icon.Information)
@@ -333,7 +330,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_update_check_error(self, error_message: str):
-        print(f"Update check failed: {error_message}")
+        logger.warning(f"Update check failed: {error_message}")
         self.update_thread = None
         self.update_worker = None
 
@@ -354,12 +351,11 @@ class MainWindow(QMainWindow):
         try:
             new_work_dir_str = tempfile.mkdtemp(prefix="sbv_load_")
             new_work_dir = Path(new_work_dir_str)
-            print(f"Attempting to load project into temporary directory: {new_work_dir}")
+            logger.info(f"Attempting to load project into temporary directory: {new_work_dir}")
 
             new_project = load_project_from_zip(path, new_work_dir_str)
 
         except IOError as e:
-            # Catch the specific error for oversized projects
             if "プロジェクトの展開後サイズが大きすぎます" in str(e):
                 reply = QMessageBox.question(
                     self,
@@ -374,32 +370,30 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.Yes:
                     try:
-                        # Second attempt, skipping the size check
-                        print("User opted to proceed. Reloading project with size check skipped.")
+                        logger.info("User opted to proceed. Reloading project with size check skipped.")
                         new_project = load_project_from_zip(path, new_work_dir_str, skip_size_check=True)
                     except Exception as final_e:
                         QMessageBox.critical(self, "プロジェクト読み込みエラー", f"プロジェクトの読み込みに失敗しました:\n{final_e}")
-                        print(f"ERROR: Failed to load oversized project: {final_e}")
+                        logger.error(f"Failed to load oversized project: {final_e}", exc_info=True)
                         self._cleanup_temp_dir(new_work_dir)
                         return
                 else:
-                    print("User canceled loading of oversized project.")
+                    logger.info("User canceled loading of oversized project.")
                     self._cleanup_temp_dir(new_work_dir)
                     return
             else:
-                # Handle other IOErrors
                 QMessageBox.critical(self, "プロジェクト読み込みエラー", f"ファイルの読み書き中にエラーが発生しました:\n{e}")
-                print(f"ERROR: An IOError occurred during project load: {e}")
+                logger.error(f"An IOError occurred during project load: {e}", exc_info=True)
                 self._cleanup_temp_dir(new_work_dir)
                 return
 
         except Exception as e:
             QMessageBox.critical(self, "プロジェクト読み込みエラー", f"プロジェクトの読み込みに失敗しました:\n{e}")
-            print(f"ERROR: Failed to load project: {e}")
+            logger.error(f"Failed to load project: {e}", exc_info=True)
             self._cleanup_temp_dir(new_work_dir)
             return
 
-        print(f"Load successful. Cleaning up old work directory: {self._work_dir}")
+        logger.info(f"Load successful. Cleaning up old work directory: {self._work_dir}")
         self._cleanup_work_dir()
 
         self._work_dir = new_work_dir
@@ -412,15 +406,15 @@ class MainWindow(QMainWindow):
         
         self._mark_as_dirty(False)
         self.page_list_manager.refresh()
-        print(f"Project opened successfully: {path}")
+        logger.info(f"Project opened successfully: {path}")
 
     def _cleanup_temp_dir(self, temp_dir_path: Optional[Path]):
         if temp_dir_path and temp_dir_path.exists():
             try:
                 shutil.rmtree(temp_dir_path, ignore_errors=True)
-                print(f"Cleaned up failed load directory: {temp_dir_path}")
+                logger.info(f"Cleaned up failed load directory: {temp_dir_path}")
             except Exception as cleanup_e:
-                print(f"ERROR: Failed to cleanup temp dir {temp_dir_path}. Reason: {cleanup_e}")
+                logger.error(f"Failed to cleanup temp dir {temp_dir_path}. Reason: {cleanup_e}")
 
     def _start_ffmpeg_check(self):
         if hasattr(self, 'ffmpeg_path_label'):
@@ -445,11 +439,11 @@ class MainWindow(QMainWindow):
             display_path = path.replace("\\", "/")
             if hasattr(self, 'ffmpeg_path_label'):
                 self.ffmpeg_path_label.setText(f"FFmpeg: {display_path}")
-            print(f"FFmpeg is available at: {path}")
+            logger.info(f"FFmpeg is available at: {path}")
             self._ffmpeg_is_available = True
             
         else:
-            print("FFmpeg not found. Launching downloader.")
+            logger.warning("FFmpeg not found. Launching downloader.")
             downloader_dialog = FFmpegDownloaderDialog(self)
             downloader_dialog.exec()
 
@@ -472,15 +466,15 @@ class MainWindow(QMainWindow):
     def _setup_work_dir(self):
         self._cleanup_work_dir()
         self._work_dir = Path(tempfile.mkdtemp(prefix="sbv_work_"))
-        print(f"Created new work directory: {self._work_dir}")
+        logger.info(f"Created new work directory: {self._work_dir}")
 
     def _cleanup_work_dir(self):
         if self._work_dir and self._work_dir.exists():
             try:
                 shutil.rmtree(self._work_dir, ignore_errors=True)
-                print(f"Cleaned up work directory: {self._work_dir}")
+                logger.info(f"Cleaned up work directory: {self._work_dir}")
             except Exception as e:
-                print(f"ERROR: Failed to cleanup work dir {self._work_dir}. Reason: {e}")
+                logger.error(f"Failed to cleanup work dir {self._work_dir}. Reason: {e}")
         self._work_dir = None
 
     @Slot()
@@ -573,7 +567,7 @@ class MainWindow(QMainWindow):
     def _new_project(self):
         if self._is_dirty:
             if not self._prompt_save_changes(): return
-        print("Creating new project...")
+        logger.info("Creating new project...")
         self._project = None
         self._project_zip_path = None
         self._cleanup_work_dir()
@@ -584,7 +578,7 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._mark_as_dirty(False)
         self.page_list_manager.refresh()
-        print("New project created and initialized.")
+        logger.info("New project created and initialized.")
 
     def _open_project(self):
         if self._is_dirty:
@@ -625,17 +619,17 @@ class MainWindow(QMainWindow):
                 return False
         
         try:
-            print(f"Saving project to: {path}")
+            logger.info(f"Saving project to: {path}")
             save_project_to_zip(str(self._work_dir), self._project, path)
             
             self._project_zip_path = path
             self.statusBar().showMessage("プロジェクトを保存しました", STATUS_BAR_SAVE_MSG_DURATION_MS)
             self._mark_as_dirty(False)
-            print("Save successful.")
+            logger.info("Save successful.")
             return True
         except Exception as e:
             QMessageBox.critical(self, "保存エラー", f"プロジェクトの保存に失敗しました:\n{e}")
-            print(f"ERROR: Project save failed: {e}")
+            logger.error(f"Project save failed: {e}", exc_info=True)
             return False
 
     def _save_project(self) -> bool:
@@ -698,7 +692,7 @@ class MainWindow(QMainWindow):
         elif reply == QMessageBox.Cancel:
             return False
         
-        print("Discarding unsaved changes.")
+        logger.info("Discarding unsaved changes.")
         return True
 
     @Slot()
@@ -758,10 +752,10 @@ class MainWindow(QMainWindow):
                             exported_count += 1
                         except (IOError, OSError) as e:
                             err_msg = f"・ページ{page_number}の画像 ({source_image_path.name}) のコピーに失敗: {e}"
-                            print(f"ERROR: {err_msg}")
+                            logger.error(err_msg)
                             error_messages.append(err_msg)
                     else:
-                        print(f"WARN: Image file not found for page {page_number}: {source_image_path}")
+                        logger.warning(f"Image file not found for page {page_number}: {source_image_path}")
 
                 if page.audio and page.duration and page.duration > MIN_AUDIO_DURATION_SEC:
                     source_audio_path = self._work_dir / page.audio
@@ -773,10 +767,10 @@ class MainWindow(QMainWindow):
                             exported_count += 1
                         except (IOError, OSError) as e:
                             err_msg = f"・ページ{page_number}の音声 ({source_audio_path.name}) のコピーに失敗: {e}"
-                            print(f"ERROR: {err_msg}")
+                            logger.error(err_msg)
                             error_messages.append(err_msg)
                     else:
-                         print(f"WARN: Audio file not found for page {page_number}: {source_audio_path}")
+                         logger.warning(f"Audio file not found for page {page_number}: {source_audio_path}")
             
             if not error_messages:
                 QMessageBox.information(
@@ -800,21 +794,20 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "エクスポート失敗", f"予期せぬエラーが発生しました:\n{e}")
-            print(f"FATAL ERROR: Failed to export assets: {e}")
-            traceback.print_exc()
+            logger.critical("Failed to export assets", exc_info=True)
         finally:
             QApplication.restoreOverrideCursor()
             self._set_ui_state("idle")
             self.statusBar().showMessage("エクスポート完了", STATUS_BAR_SAVE_MSG_DURATION_MS)
 
     def _open_homepage(self):
-        print(f"Opening homepage: {HOMEPAGE_URL}")
+        logger.info(f"Opening homepage: {HOMEPAGE_URL}")
         url = QUrl(HOMEPAGE_URL)
         QDesktopServices.openUrl(url)
 
     def _open_github_page(self):
         url_string = f"https://github.com/{GITHUB_REPO_ID}"
-        print(f"Opening GitHub page: {url_string}")
+        logger.info(f"Opening GitHub page: {url_string}")
         url = QUrl(url_string)
         QDesktopServices.openUrl(url)
 
@@ -943,7 +936,7 @@ class MainWindow(QMainWindow):
         self.worker_handler.start_image_import(imgs)
         
     def _reset_page_audio_state_on_error(self, page_id: str):
-        print(f"Resetting page audio state due to error for page_id: {page_id}")
+        logger.info(f"Resetting page audio state due to error for page_id: {page_id}")
         if self._work_dir:
             remove_waveform_cache(self._work_dir, page_id)
 
@@ -960,7 +953,7 @@ class MainWindow(QMainWindow):
                 if self.list_pages.currentRow() == row:
                     self.waveform_widget.clear_waveform()
             else:
-                print(f"WARN: _reset_page_audio_state_on_error called for a non-existent page (ID: {page_id}).")
+                logger.warning(f"_reset_page_audio_state_on_error called for a non-existent page (ID: {page_id}).")
 
     def _on_setting_changed(self):
         if not self._project:
@@ -975,7 +968,7 @@ class MainWindow(QMainWindow):
         )
         self._project.transition = new_transition_key
         
-        print(f"Project settings changed. Resolution: {self._project.resolution}, Transition: {self._project.transition}")
+        logger.info(f"Project settings changed. Resolution: {self._project.resolution}, Transition: {self._project.transition}")
         self._mark_as_dirty()
         self.page_list_manager.update_total_duration()
 

@@ -7,6 +7,7 @@ import tempfile
 import sys
 import time
 import math
+import logging
 from pathlib import Path
 from models import Project
 from utils import ffmpeg_executable_path
@@ -22,6 +23,8 @@ from config import (
     MIN_AUDIO_DURATION_SEC,
     TRANSITION_TOTAL_SECONDS
 )
+
+logger = logging.getLogger(__name__)
 
 def _get_startup_info():
     if sys.platform == "win32":
@@ -75,7 +78,8 @@ def _run_subprocess(command: list, is_canceled_callback=None):
                 stderr_file.seek(last_read_pos)
                 new_output = stderr_file.read()
                 if new_output:
-                    print(new_output.strip(), file=sys.stderr)
+                    for line in new_output.strip().split('\n'):
+                        logger.debug(f"[FFmpeg] {line}")
                     last_read_pos = stderr_file.tell()
 
                 return_code = process.poll()
@@ -83,7 +87,8 @@ def _run_subprocess(command: list, is_canceled_callback=None):
                     stderr_file.seek(last_read_pos)
                     final_output = stderr_file.read()
                     if final_output:
-                        print(final_output.strip(), file=sys.stderr)
+                        for line in final_output.strip().split('\n'):
+                            logger.debug(f"[FFmpeg] {line}")
 
                     if return_code == 0:
                         return

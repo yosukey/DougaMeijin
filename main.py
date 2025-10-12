@@ -2,6 +2,8 @@
 import sys
 import json
 import ctypes
+import time
+import logging
 from PySide6.QtCore import QTranslator, QLibraryInfo, QUrl, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -18,7 +20,7 @@ from config import (
 from ffmpeg_downloader import check_ffmpeg_exists, FFmpegDownloaderDialog
 from debug_stream import StdStreamHandler
 from logger_setup import setup_logging
-
+from log_handler import QtLogHandler
 
 def main():
     Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
@@ -27,43 +29,64 @@ def main():
     
     setup_logging()
     
+    win = MainWindow()
+    
+    qt_log_handler = QtLogHandler()
+    qt_log_handler.new_record.connect(
+        win.debug_console.append_text,
+        Qt.ConnectionType.QueuedConnection
+    )
+    logging.getLogger().addHandler(qt_log_handler)
+    
     stdout_handler = StdStreamHandler(original_stream=sys.stdout, is_stderr=False)
     stderr_handler = StdStreamHandler(original_stream=sys.stderr, is_stderr=True)
     
     sys.stdout = stdout_handler
     sys.stderr = stderr_handler
+    stdout_handler.messageWritten.connect(win.debug_console.append_text, Qt.ConnectionType.QueuedConnection)
+    stderr_handler.messageWritten.connect(win.debug_console.append_text, Qt.ConnectionType.QueuedConnection)
     
-    print(f"--- {APP_INTERNAL_NAME} v{APP_VERSION} Log Start ---")
+    logging.info(f"--- {APP_INTERNAL_NAME} v{APP_VERSION} Log Start ---")
 
     if sys.platform == "win32":
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_INTERNAL_NAME)
         except AttributeError:
-            print("WARNING: Could not set AppUserModelID. Taskbar features might not work correctly.")
+            logging.warning("Could not set AppUserModelID. Taskbar features might not work correctly.")
 
     server_name = f"{APP_INTERNAL_NAME}_SingleInstance_Lock"
     socket = QLocalSocket()
     
-    socket.connectToServer(server_name)
+    is_another_instance_running = False
+    max_retries = 5
+    retry_delay_ms = 300
 
-    if socket.waitForConnected(500):
-        print("Application already running. Sending file path (if any) to primary instance.")
+    for i in range(max_retries):
+        socket.connectToServer(server_name)
+        if socket.waitForConnected(500):
+            is_another_instance_running = True
+            break
+        else:
+            socket.disconnectFromServer()
+            time.sleep(retry_delay_ms / 1000.0)
+
+    if is_another_instance_running:
+        logging.info("Application already running. Sending file path (if any) to primary instance.")
         if len(sys.argv) > 1:
             file_path_to_open = sys.argv[1]
             if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
-                print(f"Sending file path: {file_path_to_open}")
+                logging.info(f"Sending file path: {file_path_to_open}")
 
                 payload = file_path_to_open.encode('utf-8')
                 header = len(payload).to_bytes(8, 'big', signed=False)
                 socket.write(header + payload)
-
                 socket.flush()
 
                 if not socket.waitForReadyRead(2000):
-                    print("Primary instance did not acknowledge file open.", file=sys.stderr)
+                    logging.warning("Primary instance did not acknowledge file open.")
 
         socket.disconnectFromServer()
-        print("Secondary instance exiting.")
+        logging.info("Secondary instance exiting.")
         sys.exit(0)
     else:
         QLocalServer.removeServer(server_name)
@@ -71,10 +94,10 @@ def main():
         server = QLocalServer()
         if not server.listen(server_name):
             QMessageBox.critical(None, "エラー", f"サーバーの起動に失敗しました: {server.errorString()}")
-            print(f"FATAL: Could not listen on local server socket: {server.errorString()}", file=sys.stderr)
+            logging.critical(f"Could not listen on local server socket: {server.errorString()}")
             sys.exit(1)
         
-        print("Primary instance: Local server socket established.")
+        logging.info("Primary instance: Local server socket established.")
 
         app.setApplicationName(APP_INTERNAL_NAME)
 
@@ -82,26 +105,16 @@ def main():
         path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
         if translator.load("qt_ja", path):
             app.installTranslator(translator)
-            print("Loaded Qt Japanese translations.")
+            logging.info("Loaded Qt Japanese translations.")
 
-        win = MainWindow()
-        
-        stdout_handler.messageWritten.connect(
-            win.debug_console.append_text,
-            Qt.ConnectionType.QueuedConnection
-        )
-        stderr_handler.messageWritten.connect(
-            win.debug_console.append_text,
-            Qt.ConnectionType.QueuedConnection
-        )
         
         if not show_agreement_dialog():
-            print("User did not accept agreement. Exiting.")
+            logging.info("User did not accept agreement. Exiting.")
             sys.exit(0)
         
         def handle_new_connection():
             client_connection = server.nextPendingConnection()
-            print("New client connection detected (secondary instance startup).")
+            logging.info("New client connection detected (secondary instance startup).")
 
             client_connection.disconnected.connect(client_connection.deleteLater)
 
@@ -126,10 +139,10 @@ def main():
                     try:
                         file_path = actual_payload.decode('utf-8')
                         if file_path:
-                            print(f"Received complete file path: {file_path}")
+                            logging.info(f"Received complete file path: {file_path}")
                             win.open_project_from_path(file_path)
                     except UnicodeDecodeError:
-                        print(f"ERROR: Failed to decode received path bytes.")
+                        logging.error(f"Failed to decode received path bytes.")
 
                     win.bring_to_front()
                     client_connection.write(b'ack')
@@ -143,11 +156,11 @@ def main():
         if len(sys.argv) > 1:
             file_path_to_open = sys.argv[1]
             if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
-                print(f"Opening file from command line argument: {file_path_to_open}")
+                logging.info(f"Opening file from command line argument: {file_path_to_open}")
                 win.open_project_from_path(file_path_to_open)
         
         win.show()
-        print("Application startup complete. Running event loop.")
+        logging.info("Application startup complete. Running event loop.")
         sys.exit(app.exec())
 
 

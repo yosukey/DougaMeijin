@@ -1,4 +1,5 @@
 # debug_console.py
+import logging
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QPlainTextEdit,
     QDialogButtonBox, QFileDialog, QMessageBox
@@ -8,6 +9,7 @@ from PySide6.QtCore import Slot, Qt, QEvent
 from utils import get_system_info_header
 from datetime import datetime
 
+logger = logging.getLogger(__name__)
 
 class DebugConsoleDialog(QDialog):
     def __init__(self, parent=None):
@@ -78,7 +80,7 @@ class DebugConsoleDialog(QDialog):
                     f.write(full_log_content)
             except IOError as e:
                 QMessageBox.critical(self, "Save Error", f"Failed to save log file:\n{e}")
-                print(f"ERROR: Failed to save log to {path}. Reason: {e}")
+                logger.error(f"Failed to save log to {path}.", exc_info=True)
 
     def closeEvent(self, event: QEvent):
         self.hide()

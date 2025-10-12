@@ -3,6 +3,7 @@ import os
 import shutil
 import wave
 import uuid
+import logging
 from typing import Optional
 from pathlib import Path
 from PySide6.QtCore import QObject, QUrl, QTimer, QElapsedTimer, Signal, Qt, Slot
@@ -31,6 +32,8 @@ from main_window_ui import (
 )
 from utils import remove_waveform_cache
 
+logger = logging.getLogger(__name__)
+
 
 class AudioSessionManager:
 
@@ -41,7 +44,7 @@ class AudioSessionManager:
 
     def start_session(self, page: Page) -> Optional[str]:
         if self._is_active:
-            print("ERROR: Another session is already active.")
+            logger.error("Another session is already active.")
             return None
 
         target_audio_filename = f"{page.page_id}.wav"
@@ -65,14 +68,14 @@ class AudioSessionManager:
                     backup_path = target_abs_path.with_suffix(f".{uuid.uuid4().hex}.bak")
                     old_audio_abs_path.rename(backup_path)
                     self._backup_info["backup_abs_path"] = backup_path
-                    print(f"Backed up existing audio to: {backup_path}")
+                    logger.info(f"Backed up existing audio to: {backup_path}")
             
             remove_waveform_cache(self._work_dir, page.page_id)
             self._is_active = True
             return str(target_abs_path)
 
         except Exception as e:
-            print(f"ERROR: Failed to start audio session, aborting. Reason: {e}")
+            logger.error("Failed to start audio session, aborting.", exc_info=True)
             self._reset()
             return None
 
@@ -84,9 +87,9 @@ class AudioSessionManager:
         if backup_path and backup_path.exists():
             try:
                 backup_path.unlink()
-                print(f"Session committed. Removed backup file: {backup_path}")
+                logger.info(f"Session committed. Removed backup file: {backup_path}")
             except OSError as e:
-                print(f"WARN: Could not remove audio backup file after commit: {e}")
+                logger.warning(f"Could not remove audio backup file after commit: {e}")
         
         self._reset()
 
@@ -94,24 +97,24 @@ class AudioSessionManager:
         if not self._is_active:
             return {}
 
-        print("Aborting audio session, attempting to restore from backup.")
+        logger.info("Aborting audio session, attempting to restore from backup.")
         backup_path: Optional[Path] = self._backup_info.get("backup_abs_path")
         target_path: Optional[Path] = self._backup_info.get("target_abs_path")
 
         if backup_path and backup_path.exists():
             try:
                 backup_path.replace(target_path)
-                print(f"Successfully restored backup audio to: {target_path}")
+                logger.info(f"Successfully restored backup audio to: {target_path}")
             except (OSError, shutil.Error) as e:
-                print(f"FATAL: Could not restore audio from backup. Reason: {e}")
-                print(f"Manual recovery may be needed. Backup is at: {backup_path}")
+                logger.critical(f"Could not restore audio from backup. Reason: {e}", exc_info=True)
+                logger.critical(f"Manual recovery may be needed. Backup is at: {backup_path}")
         
         elif target_path and target_path.exists():
             try:
                 target_path.unlink()
-                print(f"Removed intermediate audio file during abort: {target_path}")
+                logger.info(f"Removed intermediate audio file during abort: {target_path}")
             except OSError as e:
-                print(f"WARN: Failed to remove intermediate audio file during abort: {e}")
+                logger.warning(f"Failed to remove intermediate audio file during abort: {e}")
         
         original_state = {
             "audio": self._backup_info.get("original_rel_path"),
@@ -323,7 +326,7 @@ class RecorderHandler(QObject):
 
     @Slot()
     def _handle_audio_devices_changed(self):
-        print("Hotplug event detected: Audio input devices changed.")
+        logger.info("Hotplug event detected: Audio input devices changed.")
         combo = self.main_win.combo_audio_input
         
         current_device_id = None
@@ -372,7 +375,7 @@ class RecorderHandler(QObject):
                 default_device_id = default_device.id()
             except Exception as e:
                 default_device_id = None
-                print(f"WARNING: Failed to query default audio input: {e}")
+                logger.warning(f"Failed to query default audio input: {e}")
 
             default_index = -1
 
@@ -417,7 +420,7 @@ class RecorderHandler(QObject):
         if not new_recorder.is_valid():
             error_msg = new_recorder.get_init_error()
             QMessageBox.critical(self.main_win, "録音デバイスエラー", error_msg)
-            print(f"FATAL: AudioRecorder initialization failed: {error_msg}")
+            logger.critical(f"AudioRecorder initialization failed: {error_msg}")
             new_recorder.deleteLater()
             return
 
@@ -455,7 +458,7 @@ class RecorderHandler(QObject):
                 "録音ハンドラの初期化に失敗しました。\n"
                 "対応するマイクが見つからないか、サポートされていない音声形式です。"
             )
-            print("ERROR: toggle_recording called but self._recorder is None.")
+            logger.error("toggle_recording called but self._recorder is None.")
             return
 
         if not self._audio_devices:
@@ -492,7 +495,7 @@ class RecorderHandler(QObject):
                 "処理の競合", 
                 "現在、別の音声処理が実行中です。完了するまでお待ちください。"
             )
-            print("WARN: Recording start blocked due to an active audio session.")
+            logger.warning("Recording start blocked due to an active audio session.")
             return
 
         row = main.list_pages.currentRow()
@@ -599,7 +602,7 @@ class RecorderHandler(QObject):
         QMessageBox.critical(main, "録音エラー", msg)
         
         if self.session_manager and self.session_manager.is_active():
-            print("An error occurred during recording. Attempting to restore from backup.")
+            logger.info("An error occurred during recording. Attempting to restore from backup.")
             original_state = self.session_manager.abort_session()
             
             row = main.list_pages.currentRow()
@@ -609,13 +612,13 @@ class RecorderHandler(QObject):
                 page.audio = original_state.get("audio")
                 page.duration = original_state.get("duration")
                 page.audio_source_info = original_state.get("audio_source_info")
-                print(f"Restored page metadata for row {row}.")
+                logger.info(f"Restored page metadata for row {row}.")
             
             if 0 <= row < main.list_pages.count():
                 main.page_list_manager.refresh()
                 main.list_pages.setCurrentRow(row)
         else:
-            print("Recording error occurred without an active session.")
+            logger.info("Recording error occurred without an active session.")
             row = main.list_pages.currentRow()
             if main._project and 0 <= row < len(main._project.pages):
                 page_id_to_reset = main._project.pages[row].page_id
