@@ -1,6 +1,7 @@
 # page_list_manager.py
 from __future__ import annotations
 import os
+import logging
 from typing import TYPE_CHECKING, List
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths
@@ -22,6 +23,7 @@ from config import (
 if TYPE_CHECKING:
     from main_window import MainWindow
 
+logger = logging.getLogger(__name__)
 
 class PageListManager:
     def __init__(self, main_win: MainWindow, list_widget: QListWidget):
@@ -100,7 +102,7 @@ class PageListManager:
         pages_to_delete = [main._project.pages[self.list_widget.row(item)] for item in selected_items]
         indices_to_delete = sorted([self.list_widget.row(item) for item in selected_items], reverse=True)
         
-        print(f"Removing {len(indices_to_delete)} pages at indices: {indices_to_delete}")
+        logger.info(f"Removing {len(indices_to_delete)} pages at indices: {indices_to_delete}")
         remove_pages_from_project(str(main._work_dir), main._project.pages, pages_to_delete)
         
         for idx in indices_to_delete:
@@ -112,7 +114,7 @@ class PageListManager:
         main = self.main_win
         if not main._project: return
         
-        print(f"Reordering pages: Moving item from index {start} to {row}")
+        logger.info(f"Reordering pages: Moving item from index {start} to {row}")
         moved_page = main._project.pages.pop(start)
 
         insert_index = row
@@ -164,7 +166,7 @@ class PageListManager:
             return
 
         source_page = main._project.pages[row]
-        print(f"Duplicating page at index {row} (ID: {source_page.page_id})")
+        logger.info(f"Duplicating page at index {row} (ID: {source_page.page_id})")
         
         new_page = Page(
             image=source_page.image,
@@ -191,7 +193,7 @@ class PageListManager:
             return
 
         main._project.pages[row].locked = not main._project.pages[row].locked
-        print(f"Toggled lock for page {row}. New lock state: {main._project.pages[row].locked}")
+        logger.info(f"Toggled lock for page {row}. New lock state: {main._project.pages[row].locked}")
         main._mark_as_dirty()
         
         self.refresh()

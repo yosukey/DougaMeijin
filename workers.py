@@ -2,6 +2,7 @@
 import os
 import shutil
 import json
+import logging
 import urllib.request
 from urllib.error import URLError
 from typing import List
@@ -14,18 +15,20 @@ from models import Project
 from persistence import process_new_images
 from exporter import export_project_to_mp4
 from utils import (
-    resample_audio, audio_duration_seconds, trim_audio_end, 
+    resample_audio, audio_duration_seconds, trim_audio_end,
     load_waveform_data, get_media_duration_seconds, ffmpeg_executable_path,
     get_audio_stream_info
 )
 from config import (
-    MIN_AUDIO_FILESIZE_BYTES, AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC, 
+    MIN_AUDIO_FILESIZE_BYTES, AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC,
     MIN_RECORDING_DURATION_SEC, MIN_AUDIO_DURATION_SEC,
     GITHUB_REPO_ID, APP_INTERNAL_NAME, APP_VERSION
 )
 from ffmpeg_downloader import (
     _get_urls_and_hash, _verify_hash, _install_zip, FFMPEG_DOWNLOAD_CANCELED
 )
+
+logger = logging.getLogger(__name__)
 
 class AudioProcessingWorker(QObject):
     finished = Signal(str, str, float, object)  # page_id, rel_path, duration, waveform_data
@@ -47,11 +50,11 @@ class AudioProcessingWorker(QObject):
             if resample_audio(str(self.audio_path), str(resampled_audio_path), int(AUDIO_RATE)):
                 try:
                     resampled_audio_path.replace(self.audio_path)
-                    print("Successfully replaced audio with resampled version.")
+                    logger.info("Successfully replaced audio with resampled version.")
                 except OSError as e:
-                    print(f"Failed to replace audio with resampled version: {e}")
+                    logger.warning(f"Failed to replace audio with resampled version: {e}")
             else:
-                print("Resampling/Normalization failed, using original audio.")
+                logger.warning("Resampling/Normalization failed, using original audio.")
                 if resampled_audio_path.exists():
                     try:
                         resampled_audio_path.unlink()
@@ -68,11 +71,11 @@ class AudioProcessingWorker(QObject):
                 if trim_audio_end(str(self.audio_path), str(trimmed_audio_path), AUDIO_TRIM_END_DURATION_SEC):
                     try:
                         trimmed_audio_path.replace(self.audio_path)
-                        print("Successfully replaced audio with trimmed version.")
+                        logger.info("Successfully replaced audio with trimmed version.")
                     except OSError as e:
-                        print(f"Failed to replace audio with trimmed version: {e}")
+                        logger.warning(f"Failed to replace audio with trimmed version: {e}")
                 else:
-                    print("Trimming failed, using the original audio.")
+                    logger.warning("Trimming failed, using the original audio.")
                     if trimmed_audio_path.exists():
                         try:
                             trimmed_audio_path.unlink()
@@ -194,13 +197,13 @@ class ExportWorker(QObject):
             )
             self.finished.emit(False)
         except InterruptedError:
-            print("Export process was successfully canceled by the user.")
+            logger.info("Export process was successfully canceled by the user.")
             self.finished.emit(True)
         except Exception as e:
             if not self._is_canceled:
                 self.error.emit(str(e))
             else:
-                print(f"Export process canceled (Exception caught: {e}).")
+                logger.info(f"Export process canceled (Exception caught: {e}).")
                 self.finished.emit(False)
 
 class UpdateChecker(QObject):
@@ -323,7 +326,7 @@ class FFmpegDownloadWorker(QObject):
             if total_size > 0:
                 temp_dir = out_path.parent
                 free_space = shutil.disk_usage(temp_dir).free
-                required_space = total_size + (50 * 1024 * 1024) 
+                required_space = total_size + (50 * 1024 * 1024)
                 if free_space < required_space:
                     raise OSError(
                         f"ダウンロードに必要なディスク空き容量が不足しています。\n"

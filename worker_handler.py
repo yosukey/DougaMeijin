@@ -1,5 +1,6 @@
 # worker_handler.py
 import os
+import logging
 from typing import List
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from config import (
 )
 from utils import remove_waveform_cache, save_waveform_cache
 
+logger = logging.getLogger(__name__)
 
 class WorkerHandler(QObject):
     def __init__(self, main_win: 'MainWindow'):
@@ -69,7 +71,7 @@ class WorkerHandler(QObject):
                 "お手数ですが、ファイルを分割して追加してください。"
             )
             QMessageBox.warning(self.main_win, "ファイルの追加制限", msg)
-            print(f"WARN: Import blocked. Too many files ({len(paths)} > {MAX_FILES_TO_ADD_AT_ONCE})")
+            logger.warning(f"Import blocked. Too many files ({len(paths)} > {MAX_FILES_TO_ADD_AT_ONCE})")
             return
         
         new_source_basenames = {os.path.basename(p) for p in paths}
@@ -106,13 +108,12 @@ class WorkerHandler(QObject):
 
             if msg_box.clickedButton() == btn_no:
                 self.main_win.statusBar().showMessage("インポートがキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
-                print("Image import canceled by user due to filename collision.")
+                logger.info("Image import canceled by user due to filename collision.")
                 return
         
         self.main_win._set_ui_state("processing")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         self.main_win.statusBar().showMessage("画像のインポートを開始します...", 0)
-        print(f"Starting image import worker for {len(paths)} files...")
+        logger.info(f"Starting image import worker for {len(paths)} files...")
 
         initial_page_count = len(self.main_win._project.pages)
         
@@ -127,12 +128,12 @@ class WorkerHandler(QObject):
 
     def _on_image_import_progress(self, message: str):
         self.main_win.statusBar().showMessage(message, 0)
-        print(f"Import Progress: {message}")
+        logger.info(f"Import Progress: {message}")
         
     def _on_image_import_finished(self, new_pages: List[Page], initial_page_count: int, error_messages: List[str]):
         QApplication.restoreOverrideCursor()
         self.main_win.statusBar().showMessage(f"{len(new_pages)}個の画像を追加しました", STATUS_BAR_MSG_DURATION_MS)
-        print(f"Image import worker finished. Added {len(new_pages)} new pages.")
+        logger.info(f"Image import worker finished. Added {len(new_pages)} new pages.")
 
         if self.main_win._project:
             if new_pages:
@@ -153,7 +154,7 @@ class WorkerHandler(QObject):
         self.main_win.setEnabled(True)
         self.main_win.statusBar().showMessage("インポートに失敗しました", STATUS_BAR_MSG_DURATION_MS)
         QMessageBox.critical(self.main_win, "インポートエラー", error_message)
-        print(f"ERROR: Image import worker failed: {error_message}")
+        logger.error(f"Image import worker failed: {error_message}")
         self.main_win._set_ui_state("idle")
 
         self.import_thread = None
@@ -181,12 +182,12 @@ class WorkerHandler(QObject):
         dialog.exec()
 
     def handle_audio_file_drop(self, source_path: str):
-        print(f"Audio file dropped onto waveform widget: {source_path}")
+        logger.info(f"Audio file dropped onto waveform widget: {source_path}")
         
         row = self.main_win.list_pages.currentRow()
         if row < 0 or not self.main_win._project or not self.main_win._work_dir:
             self.main_win.statusBar().showMessage("音声を割り当てるページを選択してください", STATUS_BAR_MSG_DURATION_MS)
-            print("WARN: Audio drop ignored. No page selected.")
+            logger.warning("Audio drop ignored. No page selected.")
             return
 
         page = self.main_win._project.pages[row]
@@ -196,7 +197,7 @@ class WorkerHandler(QObject):
                 "このページの音声は上書きがロックされています。\n"
                 "インポートするには、ページを右クリックしてロックを解除してください。"
             )
-            print("WARN: Audio drop ignored. Page is locked.")
+            logger.warning("Audio drop ignored. Page is locked.")
             return
             
         has_audio = bool(page.audio and page.duration and page.duration > MIN_AUDIO_DURATION_SEC)
@@ -209,7 +210,7 @@ class WorkerHandler(QObject):
                 QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.No:
-                print("Audio import canceled by user (overwrite prompt).")
+                logger.info("Audio import canceled by user (overwrite prompt).")
                 return
         
         session_manager = self.main_win.recorder_handler.session_manager
@@ -255,7 +256,7 @@ class WorkerHandler(QObject):
         
         self.main_win._set_ui_state("processing")
         self.main_win.statusBar().showMessage("音声ファイルを処理中...", 0)
-        print(f"Starting audio processing worker for recorded file: {audio_path}")
+        logger.info(f"Starting audio processing worker for recorded file: {audio_path}")
 
         worker_instance = AudioProcessingWorker(
             work_dir=str(self.main_win._work_dir),
@@ -278,14 +279,14 @@ class WorkerHandler(QObject):
         
         page_and_index = next(((i, p) for i, p in enumerate(self.main_win._project.pages) if p.page_id == page_id), None)
         if not page_and_index:
-            print(f"WARN: Audio processing finished for a non-existent page (ID: {page_id}). Result discarded.")
+            logger.warning(f"Audio processing finished for a non-existent page (ID: {page_id}). Result discarded.")
             self.main_win._set_ui_state("idle")
             return
 
         row, page = page_and_index
             
         self.main_win.statusBar().showMessage("音声処理が完了しました", STATUS_BAR_SAVE_MSG_DURATION_MS)
-        print(f"Audio processing finished for page {row} (ID: {page_id}). Path: {rel_path}, Duration: {duration:.2f}s")
+        logger.info(f"Audio processing finished for page {row} (ID: {page_id}). Path: {rel_path}, Duration: {duration:.2f}s")
         
         page.audio = rel_path
         page.duration = duration
@@ -314,7 +315,7 @@ class WorkerHandler(QObject):
     def _on_audio_import_error(self, page_id: str, error_message: str):
         QMessageBox.critical(self.main_win, "音声インポートエラー", error_message)
         self.main_win.statusBar().showMessage("音声インポートに失敗しました", STATUS_BAR_MSG_DURATION_MS)
-        print(f"ERROR: Audio import worker failed for page_id {page_id}: {error_message}")
+        logger.error(f"Audio import worker failed for page_id {page_id}: {error_message}")
         
         if self.main_win._work_dir:
             remove_waveform_cache(self.main_win._work_dir, page_id)
@@ -346,7 +347,7 @@ class WorkerHandler(QObject):
 
     def _on_audio_processing_error(self, page_id: str, error_message: str):
         QMessageBox.critical(self.main_win, "音声処理エラー", error_message)
-        print(f"ERROR: Audio processing worker failed for page_id {page_id}: {error_message}")
+        logger.error(f"Audio processing worker failed for page_id {page_id}: {error_message}")
         
         if self.main_win._work_dir:
             remove_waveform_cache(self.main_win._work_dir, page_id)
@@ -354,7 +355,7 @@ class WorkerHandler(QObject):
         session_manager = self.main_win.recorder_handler.session_manager
         
         if session_manager.is_active() and session_manager.get_active_page_id() == page_id:
-            print("Audio processing failed. Attempting to restore from backup.")
+            logger.info("Audio processing failed. Attempting to restore from backup.")
             original_state = session_manager.abort_session()
             
             page_and_index = next(((i, p) for i, p in enumerate(self.main_win._project.pages) if p.page_id == page_id), None)
@@ -364,7 +365,7 @@ class WorkerHandler(QObject):
                 page.audio = original_state.get("audio")
                 page.duration = original_state.get("duration")
                 page.audio_source_info = original_state.get("audio_source_info")
-                print(f"Restored page metadata for row {row} (ID: {page_id}).")
+                logger.info(f"Restored page metadata for row {row} (ID: {page_id}).")
                 self.main_win.page_list_manager.refresh()
                 self.main_win.list_pages.setCurrentRow(row)
         else:
@@ -468,7 +469,7 @@ class WorkerHandler(QObject):
 
     def request_export_cancel(self):
         if self.export_worker:
-            print("Export cancel requested by user (progress dialog).")
+            logger.info("Export cancel requested by user (progress dialog).")
             self.export_worker.request_cancel()
             self.main_win.statusBar().showMessage("動画の書き出しをキャンセルしています...", 0)
             if self.export_progress_dialog:
@@ -507,7 +508,7 @@ class WorkerHandler(QObject):
         QApplication.restoreOverrideCursor()
         self.main_win._set_ui_state("idle")
         QMessageBox.critical(self.main_win, "書き出し失敗", error_message)
-        print(f"ERROR: Export worker failed: {error_message}")
+        logger.error(f"Export worker failed: {error_message}")
 
         self.export_thread = None
         self.export_worker = None

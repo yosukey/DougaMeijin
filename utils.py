@@ -4,6 +4,7 @@ import re
 import sys
 import wave
 import subprocess
+import logging
 from typing import Optional, Tuple
 import shutil
 import numpy as np
@@ -20,6 +21,8 @@ import json
 import psutil
 import platform
 import importlib.metadata
+
+logger = logging.getLogger(__name__)
 
 _natural_key = re.compile(r"(\d+)|([^\d]+)")
 
@@ -140,19 +143,21 @@ def resample_audio(input_path: str, output_path: str, target_rate: int) -> bool:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         
-        subprocess.run(
+        result = subprocess.run(
             command,
             check=True,
             capture_output=True,
             encoding="utf-8",
             startupinfo=startupinfo
         )
+        if result.stderr:
+            logger.warning(f"FFmpeg stderr during resampling:\n{result.stderr}")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg audio processing failed. Error: {e.stderr}")
+        logger.error(f"FFmpeg audio processing failed. Error: {e.stderr}")
         return False
     except FileNotFoundError:
-        print(f"FFmpeg not found at {ffmpeg}. Audio processing failed.")
+        logger.error(f"FFmpeg not found at {ffmpeg}. Audio processing failed.")
         return False
 
 def load_waveform_data(path: str, target_points: int) -> Optional[np.ndarray]:
@@ -218,19 +223,19 @@ def save_waveform_cache(work_dir: Path, page_id: str, data: np.ndarray):
         cache_path = get_waveform_cache_path(work_dir, page_id)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(cache_path, data)
-        print(f"Waveform cache saved for page_id: {page_id}")
+        logger.info(f"Waveform cache saved for page_id: {page_id}")
     except (IOError, OSError) as e:
-        print(f"ERROR: Could not save waveform cache for page {page_id}. Reason: {e}")
+        logger.error(f"Could not save waveform cache for page {page_id}. Reason: {e}")
 
 def load_waveform_cache(work_dir: Path, page_id: str) -> Optional[np.ndarray]:
     cache_path = get_waveform_cache_path(work_dir, page_id)
     if cache_path.exists():
         try:
             data = np.load(cache_path, allow_pickle=False)
-            print(f"Waveform cache loaded for page_id: {page_id}")
+            logger.info(f"Waveform cache loaded for page_id: {page_id}")
             return data
         except (IOError, OSError, ValueError) as e:
-            print(f"ERROR: Could not load waveform cache for page {page_id}. Reason: {e}")
+            logger.error(f"Could not load waveform cache for page {page_id}. Reason: {e}")
             remove_waveform_cache(work_dir, page_id)
     return None
 
@@ -239,9 +244,9 @@ def remove_waveform_cache(work_dir: Path, page_id: str):
     if cache_path.exists():
         try:
             cache_path.unlink()
-            print(f"Waveform cache removed for page_id: {page_id}")
+            logger.info(f"Waveform cache removed for page_id: {page_id}")
         except OSError as e:
-            print(f"ERROR: Could not remove waveform cache for page {page_id}. Reason: {e}")
+            logger.error(f"Could not remove waveform cache for page {page_id}. Reason: {e}")
 
 def trim_audio_end(input_path: str, output_path: str, duration_sec: float) -> bool:
     ffmpeg = ffmpeg_executable_path()
@@ -269,10 +274,10 @@ def trim_audio_end(input_path: str, output_path: str, duration_sec: float) -> bo
         )
         return True
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg trimming failed. Error: {e.stderr}")
+        logger.error(f"FFmpeg trimming failed. Error: {e.stderr}")
         return False
     except FileNotFoundError:
-        print(f"FFmpeg not found at {ffmpeg}. Trimming failed.")
+        logger.error(f"FFmpeg not found at {ffmpeg}. Trimming failed.")
         return False
 
 def get_image_metadata(source_path: str) -> dict:
@@ -298,7 +303,7 @@ def get_image_metadata(source_path: str) -> dict:
                      metadata["exif_orientation"] = f"回転情報: {simple_descriptions[orientation]}"
 
     except Exception as e:
-        print(f"Could not read metadata from {source_path}: {e}")
+        logger.warning(f"Could not read metadata from {source_path}: {e}")
     
     return metadata
 
@@ -311,7 +316,7 @@ def get_directory_uncompressed_size(dir_path: Path) -> int:
             elif entry.is_dir(follow_symlinks=False):
                 total_size += get_directory_uncompressed_size(Path(entry.path))
     except (FileNotFoundError, OSError) as e:
-        print(f"Could not calculate directory size for {dir_path}. Reason: {e}")
+        logger.warning(f"Could not calculate directory size for {dir_path}. Reason: {e}")
     return total_size
 
 def get_system_info_header() -> str:
@@ -400,23 +405,23 @@ def gracefully_shutdown_thread(
     
     try:
         if thread.isRunning():
-            print(f"Waiting for {name} thread to finish...")
+            logger.info(f"Waiting for {name} thread to finish...")
             thread.quit()
             if not thread.wait(timeout_ms):
-                print(f"WARNING: {name} thread did not finish within {timeout_ms}ms.")
+                logger.warning(f"{name} thread did not finish within {timeout_ms}ms.")
                 if force_terminate:
-                    print(f"Forcefully terminating {name} thread.")
+                    logger.warning(f"Forcefully terminating {name} thread.")
                     thread.terminate()
                 else:
-                    print(f"Termination was skipped for {name} thread as per configuration.")
+                    logger.info(f"Termination was skipped for {name} thread as per configuration.")
     except RuntimeError:
-        print(f"Thread '{name}' was already deleted, no shutdown action needed.")
+        logger.info(f"Thread '{name}' was already deleted, no shutdown action needed.")
 
 def prune_stale_caches(work_dir: Path, project: 'Project'):
     if not work_dir or not project:
         return
 
-    print("Starting stale cache pruning...")
+    logger.info("Starting stale cache pruning...")
     live_page_ids = {p.page_id for p in project.pages}
     pruned_count = 0
 
@@ -428,15 +433,15 @@ def prune_stale_caches(work_dir: Path, project: 'Project'):
             if page_id_from_filename not in live_page_ids:
                 try:
                     cache_file.unlink()
-                    print(f"  - Pruned stale waveform cache: {cache_file.name}")
+                    logger.info(f"  - Pruned stale waveform cache: {cache_file.name}")
                     pruned_count += 1
                 except OSError as e:
-                    print(f"  - ERROR: Could not prune cache file {cache_file.name}: {e}")
+                    logger.error(f"  - Could not prune cache file {cache_file.name}: {e}")
     
     if pruned_count > 0:
-        print(f"Cache pruning complete. Removed {pruned_count} stale file(s).")
+        logger.info(f"Cache pruning complete. Removed {pruned_count} stale file(s).")
     else:
-        print("Cache pruning complete. No stale files found.")
+        logger.info("Cache pruning complete. No stale files found.")
 
 def get_audio_stream_info(path: str) -> Tuple[Optional[dict], Optional[str]]:
     try:

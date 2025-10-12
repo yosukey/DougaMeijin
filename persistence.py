@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 import zipfile
+import logging
 from typing import List
 from PIL import Image, ImageOps, ImageFile
 import io
@@ -23,6 +24,7 @@ import fitz
 from config import DEFAULT_RESOLUTION, DEFAULT_FPS
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+logger = logging.getLogger(__name__)
 
 def _ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
@@ -207,26 +209,26 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
             max_px_mp = MAX_IMAGE_PIXELS / 1_000_000
             error_msg = f"・{original_filename}: 画像の解像度が高すぎるためスキップされました (上限: {max_px_mp:.0f}メガピクセル)。"
             error_messages.append(error_msg)
-            print(f"DecompressionBombError processing {original_filename}.")
+            logger.error(f"DecompressionBombError processing {original_filename}.")
             continue
         except MemoryError:
             error_msg = f"・{original_filename}: メモリ不足のため処理に失敗しました。ファイルが大きすぎるか、複雑すぎる可能性があります。"
             error_messages.append(error_msg)
-            print(f"MemoryError processing {original_filename}.")
+            logger.error(f"MemoryError processing {original_filename}.")
             if progress_callback:
                 progress_callback(f"エラー: {error_msg}")
             continue
         except fitz.errors.FitzError as e:
             error_msg = f"・{original_filename}: PDFファイルの処理に失敗しました。ファイルが破損しているか、非対応の形式である可能性があります。"
             error_messages.append(error_msg)
-            print(f"Fitz (PyMuPDF) error processing {original_filename}: {e}")
+            logger.error(f"Fitz (PyMuPDF) error processing {original_filename}: {e}")
             if progress_callback:
                 progress_callback(f"エラー: {error_msg}")
             continue
         except Exception as e:
             error_msg = f"・{original_filename}: 予期せぬエラーのため処理に失敗しました: {e}"
             error_messages.append(error_msg)
-            print(error_msg)
+            logger.error(error_msg, exc_info=True)
             continue
             
     return new_pages, error_messages
@@ -294,7 +296,7 @@ def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = 
                 shutil.rmtree(work_dir_path)
                 break 
             except OSError as e:
-                print(f"WARN: Attempt {i+1}/{attempts} to remove old work directory failed: {e}")
+                logger.warning(f"Attempt {i+1}/{attempts} to remove old work directory failed: {e}")
                 if i < attempts - 1:
                     time.sleep(0.2)
                 else:
@@ -324,7 +326,7 @@ def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = 
             target_path = (work_dir_path / member.filename).resolve()
             
             if resolved_work_dir not in target_path.parents and target_path != resolved_work_dir:
-                print(f"Security Warning: Skipping malicious path in project ZIP: {member.filename}")
+                logger.warning(f"Security Warning: Skipping malicious path in project ZIP: {member.filename}")
                 continue
 
             if member.is_dir():
