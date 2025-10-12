@@ -146,33 +146,41 @@ def main():
                         received_payload_buffer = received_payload_buffer[8:]
                         expected_payload_size = int.from_bytes(header, 'big', signed=False)
 
-                        if expected_payload_size > MAX_PAYLOAD_SIZE:
-                            logging.error(f"Received oversized payload header ({expected_payload_size} bytes). Closing connection.")
+                        if expected_payload_size <= 0 or expected_payload_size > MAX_PAYLOAD_SIZE:
+                            reason = "0以下です" if expected_payload_size <= 0 else "上限を超えています"
+                            logging.error(
+                                f"不正なペイロードサイズを受信しました: {expected_payload_size} ({reason})。 "
+                                f"ヘッダー (16進): {header.hex()}。接続を閉じます。"
+                            )
                             client_connection.close()
                             return
 
-                    if len(received_payload_buffer) >= expected_payload_size:
-                        actual_payload = received_payload_buffer[:expected_payload_size]
-                        received_payload_buffer = received_payload_buffer[expected_payload_size:]
+                    if len(received_payload_buffer) < expected_payload_size:
+                        return
+
+                    actual_payload = received_payload_buffer[:expected_payload_size]
+                    received_payload_buffer = received_payload_buffer[expected_payload_size:]
+                    
+                    try:
+                        file_path = actual_payload.decode('utf-8')
+                        if file_path:
+                            logging.info(f"ファイルパスを受信しました: {file_path}")
+                            win.open_project_from_path(file_path)
                         
-                        try:
-                            file_path = actual_payload.decode('utf-8')
-                            if file_path:
-                                logging.info(f"Received complete file path: {file_path}")
-                                win.open_project_from_path(file_path)
-                        except UnicodeDecodeError:
-                            logging.error(
-                                f"Failed to decode received path bytes. Raw data (hex): {actual_payload.hex()}"
-                            )
                         win.bring_to_front()
+                        
                         client_connection.write(b'ack')
                         
+                        if not client_connection.waitForBytesWritten(1000):
+                            logging.warning("ACKの書き込み待機中にタイムアウトしました。")
+                    
+                    except UnicodeDecodeError:
+                        logging.error(f"受信データのデコードに失敗しました。データ(16進): {actual_payload.hex()}")
+                    
+                    finally:
                         client_connection.close()
-                        
-                        expected_payload_size = 0
-                    else:
-                        break
-
+                        return
+            
             client_connection.readyRead.connect(read_from_socket)
 
         server.newConnection.connect(handle_new_connection)
@@ -182,7 +190,7 @@ def main():
             if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
                 logging.info(f"Opening file from command line argument: {file_path_to_open}")
                 win.open_project_from_path(file_path_to_open)
-        
+
         win.show()
         logging.info("Application startup complete. Running event loop.")
         sys.exit(app.exec())
