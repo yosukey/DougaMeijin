@@ -35,166 +35,178 @@ def main():
     )
     logging.getLogger().addHandler(qt_log_handler)
     
-    stdout_handler = StdStreamHandler(original_stream=sys.stdout, is_stderr=False)
-    stderr_handler = StdStreamHandler(original_stream=sys.stderr, is_stderr=True)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    
+    stdout_handler = StdStreamHandler(original_stream=original_stdout, is_stderr=False)
+    stderr_handler = StdStreamHandler(original_stream=original_stderr, is_stderr=True)
     
     sys.stdout = stdout_handler
     sys.stderr = stderr_handler
     stdout_handler.messageWritten.connect(win.debug_console.append_text, Qt.ConnectionType.QueuedConnection)
     stderr_handler.messageWritten.connect(win.debug_console.append_text, Qt.ConnectionType.QueuedConnection)
     
-    logging.info(f"--- {APP_INTERNAL_NAME} v{APP_VERSION} Log Start ---")
+    try:
+        logging.info(f"--- {APP_INTERNAL_NAME} v{APP_VERSION} Log Start ---")
 
-    if sys.platform == "win32":
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_INTERNAL_NAME)
-        except AttributeError:
-            logging.warning("Could not set AppUserModelID. Taskbar features might not work correctly.")
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_INTERNAL_NAME)
+            except AttributeError:
+                logging.warning("Could not set AppUserModelID. Taskbar features might not work correctly.")
 
-    server_name = f"{APP_INTERNAL_NAME}_SingleInstance_Lock"
-    socket = QLocalSocket()
-    
-    is_another_instance_running = False
-    max_retries = 5
-    retry_delay_ms = 300
+        server_name = f"{APP_INTERNAL_NAME}_SingleInstance_Lock"
+        socket = QLocalSocket()
+        
+        is_another_instance_running = False
+        max_retries = 5
+        retry_delay_ms = 300
 
-    for i in range(max_retries):
-        socket.connectToServer(server_name)
-        if socket.waitForConnected(500):
-            is_another_instance_running = True
-            break
-        else:
-            socket.disconnectFromServer()
-            time.sleep(retry_delay_ms / 1000.0)
-
-    if is_another_instance_running:
-        logging.info("Application already running. Sending file path (if any) to primary instance.")
-        if len(sys.argv) > 1:
-            file_path_to_open = sys.argv[1]
-            if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
-                logging.info(f"Sending file path: {file_path_to_open}")
-
-                payload = file_path_to_open.encode('utf-8')
-                header = len(payload).to_bytes(8, 'big', signed=False)
-                socket.write(header + payload)
-                
-                if not socket.waitForBytesWritten(2000):
-                    logging.error("Failed to write data to the primary instance's socket.")
-                else:
-                    if not socket.waitForReadyRead(2000):
-                        logging.warning("Primary instance did not acknowledge file open within the timeout period.")
-                    else:
-                        response = socket.readAll().data()
-                        if response == b'ack':
-                            logging.info("Primary instance acknowledged the file open.")
-                        else:
-                            logging.warning(f"Received unexpected response from primary instance: {response!r}")
+        for i in range(max_retries):
+            socket.connectToServer(server_name)
+            if socket.waitForConnected(500):
+                is_another_instance_running = True
+                break
             else:
-                logging.warning(
-                    f"Ignoring command line argument: '{file_path_to_open}' is not a valid project file ({PROJECT_FILE_EXTENSION})."
-                )
+                socket.disconnectFromServer()
+                time.sleep(retry_delay_ms / 1000.0)
 
-        socket.disconnectFromServer()
-        logging.info("Secondary instance exiting.")
-        sys.exit(0)
-    else:
-        QLocalServer.removeServer(server_name)
-        
-        server = QLocalServer()
-        if not server.listen(server_name):
-            QMessageBox.critical(None, "エラー", f"サーバーの起動に失敗しました: {server.errorString()}")
-            logging.critical(f"Could not listen on local server socket: {server.errorString()}")
-            sys.exit(1)
-        
-        logging.info("Primary instance: Local server socket established.")
+        if is_another_instance_running:
+            logging.info("Application already running. Sending file path (if any) to primary instance.")
+            if len(sys.argv) > 1:
+                file_path_to_open = sys.argv[1]
+                if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
+                    logging.info(f"Sending file path: {file_path_to_open}")
 
-        app.setApplicationName(APP_INTERNAL_NAME)
+                    payload = file_path_to_open.encode('utf-8')
+                    header = len(payload).to_bytes(8, 'big', signed=False)
+                    socket.write(header + payload)
+                    
+                    if not socket.waitForBytesWritten(2000):
+                        logging.error("Failed to write data to the primary instance's socket.")
+                    else:
+                        if not socket.waitForReadyRead(2000):
+                            logging.warning("Primary instance did not acknowledge file open within the timeout period.")
+                        else:
+                            response = socket.readAll().data()
+                            if response == b'ack':
+                                logging.info("Primary instance acknowledged the file open.")
+                            else:
+                                logging.warning(f"Received unexpected response from primary instance: {response!r}")
+                else:
+                    logging.warning(
+                        f"Ignoring command line argument: '{file_path_to_open}' is not a valid project file ({PROJECT_FILE_EXTENSION})."
+                    )
 
-        translator = QTranslator()
-        path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-        if translator.load("qt_ja", path):
-            app.installTranslator(translator)
-            logging.info("Loaded Qt Japanese translations.")
-
-        
-        if not show_agreement_dialog():
-            logging.info("User did not accept agreement. Exiting.")
+            socket.disconnectFromServer()
+            logging.info("Secondary instance exiting.")
             sys.exit(0)
-        
-        MAX_PAYLOAD_SIZE = 4096
-        
-        def handle_new_connection():
-            client_connection = server.nextPendingConnection()
-            logging.info("New client connection detected (secondary instance startup).")
-
-            client_connection.disconnected.connect(client_connection.deleteLater)
-
-            expected_payload_size = 0
-            received_payload_buffer = b''
-
-            def read_from_socket():
-                nonlocal expected_payload_size, received_payload_buffer
-                
-                received_payload_buffer += client_connection.readAll()
-
-                while True:
-                    if expected_payload_size == 0:
-                        if len(received_payload_buffer) < 8:
-                            return
-                        
-                        header = received_payload_buffer[:8]
-                        received_payload_buffer = received_payload_buffer[8:]
-                        expected_payload_size = int.from_bytes(header, 'big', signed=False)
-
-                        if expected_payload_size <= 0 or expected_payload_size > MAX_PAYLOAD_SIZE:
-                            reason = "0以下です" if expected_payload_size <= 0 else "上限を超えています"
-                            logging.error(
-                                f"不正なペイロードサイズを受信しました: {expected_payload_size} ({reason})。 "
-                                f"ヘッダー (16進): {header.hex()}。接続を閉じます。"
-                            )
-                            client_connection.close()
-                            return
-
-                    if len(received_payload_buffer) < expected_payload_size:
-                        return
-
-                    actual_payload = received_payload_buffer[:expected_payload_size]
-                    received_payload_buffer = received_payload_buffer[expected_payload_size:]
-                    
-                    try:
-                        file_path = actual_payload.decode('utf-8')
-                        if file_path:
-                            logging.info(f"ファイルパスを受信しました: {file_path}")
-                            win.open_project_from_path(file_path)
-                        
-                        win.bring_to_front()
-                        
-                        client_connection.write(b'ack')
-                        
-                        if not client_connection.waitForBytesWritten(1000):
-                            logging.warning("ACKの書き込み待機中にタイムアウトしました。")
-                    
-                    except UnicodeDecodeError:
-                        logging.error(f"受信データのデコードに失敗しました。データ(16進): {actual_payload.hex()}")
-                    
-                    finally:
-                        client_connection.close()
-                        return
+        else:
+            QLocalServer.removeServer(server_name)
             
-            client_connection.readyRead.connect(read_from_socket)
+            server = QLocalServer()
+            if not server.listen(server_name):
+                QMessageBox.critical(None, "エラー", f"サーバーの起動に失敗しました: {server.errorString()}")
+                logging.critical(f"Could not listen on local server socket: {server.errorString()}")
+                sys.exit(1)
+            
+            logging.info("Primary instance: Local server socket established.")
 
-        server.newConnection.connect(handle_new_connection)
-        
-        if len(sys.argv) > 1:
-            file_path_to_open = sys.argv[1]
-            if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
-                logging.info(f"Opening file from command line argument: {file_path_to_open}")
-                win.open_project_from_path(file_path_to_open)
+            app.setApplicationName(APP_INTERNAL_NAME)
 
-        win.show()
-        logging.info("Application startup complete. Running event loop.")
-        sys.exit(app.exec())
+            translator = QTranslator()
+            path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+            if translator.load("qt_ja", path):
+                app.installTranslator(translator)
+                logging.info("Loaded Qt Japanese translations.")
 
+            
+            if not show_agreement_dialog():
+                logging.info("User did not accept agreement. Exiting.")
+                sys.exit(0)
+            
+            MAX_PAYLOAD_SIZE = 4096
+            
+            def handle_new_connection():
+                client_connection = server.nextPendingConnection()
+                
+                if client_connection:
+                    logging.info("New client connection detected (secondary instance startup).")
+
+                    client_connection.disconnected.connect(client_connection.deleteLater)
+
+                    expected_payload_size = 0
+                    received_payload_buffer = b''
+
+                    def read_from_socket():
+                        nonlocal expected_payload_size, received_payload_buffer
+                        
+                        received_payload_buffer += client_connection.readAll()
+
+                        while True:
+                            if expected_payload_size == 0:
+                                if len(received_payload_buffer) < 8:
+                                    return
+                                
+                                header = received_payload_buffer[:8]
+                                received_payload_buffer = received_payload_buffer[8:]
+                                expected_payload_size = int.from_bytes(header, 'big', signed=False)
+
+                                if expected_payload_size <= 0 or expected_payload_size > MAX_PAYLOAD_SIZE:
+                                    reason = "0以下です" if expected_payload_size <= 0 else "上限を超えています"
+                                    logging.error(
+                                        f"不正なペイロードサイズを受信しました: {expected_payload_size} ({reason})。 "
+                                        f"ヘッダー (16進): {header.hex()}。接続を閉じます。"
+                                    )
+                                    client_connection.close()
+                                    return
+
+                            if len(received_payload_buffer) < expected_payload_size:
+                                return
+
+                            actual_payload = received_payload_buffer[:expected_payload_size]
+                            received_payload_buffer = received_payload_buffer[expected_payload_size:]
+                            
+                            try:
+                                file_path = actual_payload.decode('utf-8')
+                                if file_path:
+                                    logging.info(f"ファイルパスを受信しました: {file_path}")
+                                    win.open_project_from_path(file_path)
+                                
+                                win.bring_to_front()
+                                
+                                client_connection.write(b'ack')
+                                
+                                if not client_connection.waitForBytesWritten(1000):
+                                    logging.warning("ACKの書き込み待機中にタイムアウトしました。")
+                            
+                            except UnicodeDecodeError:
+                                logging.error(f"受信データのデコードに失敗しました。データ(16進): {actual_payload.hex()}")
+                            
+                            finally:
+                                client_connection.close()
+                                return
+                    
+                    client_connection.readyRead.connect(read_from_socket)
+
+            server.newConnection.connect(handle_new_connection)
+            
+            if len(sys.argv) > 1:
+                file_path_to_open = sys.argv[1]
+                if file_path_to_open.lower().endswith(PROJECT_FILE_EXTENSION):
+                    logging.info(f"Opening file from command line argument: {file_path_to_open}")
+                    win.open_project_from_path(file_path_to_open)
+
+            win.show()
+            logging.info("Application startup complete. Running event loop.")
+            
+            exit_code = app.exec()
+            sys.exit(exit_code)
+            
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        logging.info("Restored standard output streams.")
 
 def show_agreement_dialog() -> bool:
     dialog = QDialog()
