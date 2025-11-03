@@ -21,7 +21,11 @@ def setup_logging():
         print(f"FATAL: Could not create log file directory. Reason: {e}", file=sys.stderr)
         return
 
-    # 2. Configure a rotating file handler for detailed error logging
+    # 2. Get the root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 3. Configure a rotating file handler for detailed error logging
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding='utf-8'
     )
@@ -36,21 +40,18 @@ def setup_logging():
     file_formatter = logging.Formatter(file_format)
     file_handler.setFormatter(file_formatter)
     file_handler.setLevel(logging.WARNING)
-
-    # 3. Configure a stream handler for console output during development
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_formatter = logging.Formatter(
-        '[%(asctime)s] [%(levelname)-8s] [%(name)s:%(lineno)d] %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(logging.INFO)
-
-    # 4. Get the root logger and configure it
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
+
+    # 4. Configure a stream handler for console output only if stdout is valid.
+    if sys.stdout and hasattr(sys.stdout, 'write'):
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_formatter = logging.Formatter(
+            '[%(asctime)s] [%(levelname)-8s] [%(name)s:%(lineno)d] %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(logging.INFO)
+        root_logger.addHandler(console_handler)
 
     # 5. Define the hook for uncaught exceptions
     def handle_exception(exc_type, exc_value, exc_traceback):
