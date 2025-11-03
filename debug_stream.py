@@ -12,9 +12,11 @@ class StdStreamHandler(QObject):
         self._is_stderr = is_stderr
 
     def write(self, text: str):
-        if self._original_stream:
-            self._original_stream.write(text)
-
+        if self._original_stream and hasattr(self._original_stream, 'write'):
+            try:
+                self._original_stream.write(text)
+            except Exception:
+                pass
         line_stripped = text.strip()
         if not line_stripped:
             return
@@ -27,5 +29,8 @@ class StdStreamHandler(QObject):
         self.messageWritten.emit(formatted_message)
 
     def flush(self):
-        if self._original_stream:
-            self._original_stream.flush()
+        if self._original_stream and hasattr(self._original_stream, 'flush'):
+            try:
+                self._original_stream.flush()
+            except Exception:
+                pass
