@@ -49,7 +49,7 @@ jobs:
 
       # 6. Inno Setup を Winget でインストール
       - name: Install Inno Setup via Winget
-        run: winget install --id JRSoftware.InnoSetup -e --source winget --accept-source-agreements --accept-package-agreements
+        run: winget install --id JRSoftware.InnoSetup -e --source winget --force --accept-source-agreements --accept-package-agreements
     
       # 7. Inno Setup を PATH に追加
       - name: Find and Add Inno Setup to PATH
