@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _natural_key = re.compile(r"(\d+)|([^\d]+)")
 
+class FFprobeError(Exception):
+    pass
+
 def natural_sort_key(s: str):
     parts = _natural_key.findall(os.path.basename(s))
     out = []
@@ -81,18 +84,18 @@ def ffmpeg_executable_path() -> str:
         "または、手動でFFmpegをインストールし、システムのPATH環境変数を通してください。"
     )
 
-def get_media_duration_seconds(path: str) -> Tuple[float, Optional[str]]:
+def _get_media_info(path: str) -> dict:
     try:
         ffmpeg_dir = Path(ffmpeg_executable_path()).parent
         ffprobe_path = ffmpeg_dir / FFPROBE_EXE
-        
         ffprobe_cmd = str(ffprobe_path) if ffprobe_path.exists() else "ffprobe"
 
         command = [
             ffprobe_cmd,
             '-v', 'error',
             '-print_format', 'json',
-            '-show_format',
+            '-show_format',  # Get format info (duration)
+            '-show_streams', # Get stream info (codec, etc.)
             '-i', path
         ]
     
@@ -109,15 +112,38 @@ def get_media_duration_seconds(path: str) -> Tuple[float, Optional[str]]:
             startupinfo=startupinfo
         )
         data = json.loads(result.stdout)
+        return data
+    except FileNotFoundError:
+        msg = "ffprobeが見つかりません。FFmpegが正しくインストールされているか確認してください。"
+        logger.error(msg)
+        raise FFprobeError(msg)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, TypeError, ValueError, OSError) as e:
+        msg = f"ffprobeの実行に失敗しました: {e}"
+        logger.error(msg)
+        raise FFprobeError(msg)
+
+
+def get_media_duration_seconds(path: str) -> float:
+    try:
+        data = _get_media_info(path)
         duration_str = data.get("format", {}).get("duration")
         if duration_str:
-            return float(duration_str), None
-        return 0.0, "FFprobeから音声長を取得できませんでした。"
-    except FileNotFoundError:
-        return 0.0, "ffprobeが見つかりません。FFmpegが正しくインストールされているか確認してください。"
-    except (subprocess.CalledProcessError, json.JSONDecodeError, TypeError, ValueError, OSError) as e:
-        return 0.0, f"ffprobeの実行に失敗しました: {e}"
+            return float(duration_str)
+        
+        logger.warning(f"FFprobe output for {path} did not contain a duration string.")
+        return 0.0
+    except (TypeError, ValueError, AttributeError) as e:
+        logger.warning(f"Failed to parse duration from ffprobe output. Error: {e}")
+        return 0.0
 
+def get_audio_stream_info(path: str) -> dict:
+    data = _get_media_info(path)
+    audio_streams = [s for s in data.get("streams", []) if s.get("codec_type") == "audio"]
+    
+    if audio_streams:
+        return audio_streams[0]
+    
+    raise FFprobeError(f"ファイル内に音声ストリームが見つかりませんでした: {path}")
 
 def resample_audio(input_path: str, output_path: str, target_rate: int) -> bool:
     ffmpeg = ffmpeg_executable_path()
