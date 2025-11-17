@@ -177,6 +177,11 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event):
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, logging.StreamHandler):
+                root_logger.removeHandler(handler)
+        
         try:
             WAIT_TIMEOUT_MS = 5000
             UPDATE_CHECK_WAIT_TIMEOUT_MS = 9000
@@ -185,6 +190,7 @@ class MainWindow(QMainWindow):
             gracefully_shutdown_thread(self.worker_handler.audio_thread, "Audio Processing", WAIT_TIMEOUT_MS)
             gracefully_shutdown_thread(self.worker_handler.import_thread, "Image Import", WAIT_TIMEOUT_MS)
             gracefully_shutdown_thread(self.worker_handler.audio_import_thread, "Audio Import", WAIT_TIMEOUT_MS)
+            gracefully_shutdown_thread(self.worker_handler.waveform_thread, "Waveform Loader", WAIT_TIMEOUT_MS)
 
             if self.worker_handler.export_thread and self.worker_handler.export_thread.isRunning():
                 logger.info("Export is running. Requesting cancellation...")
@@ -910,17 +916,17 @@ class MainWindow(QMainWindow):
         if has_audio:
             waveform_data = load_waveform_cache(self._work_dir, page.page_id)
             
-            if waveform_data is None:
-                audio_abs = self._work_dir / page.audio
-                waveform_data = load_waveform_data(str(audio_abs), self.waveform_widget.width())
-                if waveform_data is not None:
-                    save_waveform_cache(self._work_dir, page.page_id, waveform_data)
-            
             if waveform_data is not None:
                 duration = page.duration if page.duration is not None else 0.0
                 self.waveform_widget.set_waveform(waveform_data, duration)
             else:
                 self.waveform_widget.clear_waveform()
+                audio_abs = self._work_dir / page.audio
+                self.worker_handler.start_waveform_load(
+                    str(audio_abs),
+                    self.waveform_widget.width(),
+                    page.page_id
+                )
         else:
             self.waveform_widget.clear_waveform()
 

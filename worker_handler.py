@@ -11,7 +11,10 @@ from PySide6.QtWidgets import (
 )
 
 from models import Page
-from workers import AudioProcessingWorker, AudioImportWorker, ImageImportWorker, ExportWorker
+from workers import (
+    AudioProcessingWorker, AudioImportWorker, ImageImportWorker, ExportWorker,
+    WaveformLoadWorker
+)
 from config import (
     STATUS_BAR_MSG_DURATION_MS, STATUS_BAR_SAVE_MSG_DURATION_MS,
     MAX_FILES_TO_ADD_AT_ONCE, WARNING_TEXT, DEFAULT_EXPORT_FILENAME,
@@ -34,6 +37,8 @@ class WorkerHandler(QObject):
         self.export_worker = None
         self.audio_import_thread = None
         self.audio_import_worker = None
+        self.waveform_thread = None
+        self.waveform_worker = None
         
         self.export_progress_dialog = None
 
@@ -244,7 +249,7 @@ class WorkerHandler(QObject):
         )
         self.audio_import_worker, self.audio_import_thread = self._start_worker(
             worker_instance,
-            on_finished=self._on_audio_processing_finished,
+            on_finished=self._on_audio_import_finished,
             on_error=self._on_audio_import_error
         )
 
@@ -266,11 +271,11 @@ class WorkerHandler(QObject):
         )
         self.audio_worker, self.audio_thread = self._start_worker(
             worker_instance,
-            on_finished=self._on_audio_processing_finished,
+            on_finished=self._on_record_processing_finished,
             on_error=self._on_audio_processing_error
         )
 
-    def _on_audio_processing_finished(self, page_id: str, rel_path: str, duration: float, waveform_data):
+    def _finalize_audio_processing(self, page_id: str, rel_path: str, duration: float, waveform_data):
         self.main_win.recorder_handler.session_manager.commit_session()
 
         if not self.main_win._project:
@@ -280,7 +285,6 @@ class WorkerHandler(QObject):
         page_and_index = next(((i, p) for i, p in enumerate(self.main_win._project.pages) if p.page_id == page_id), None)
         if not page_and_index:
             logger.warning(f"Audio processing finished for a non-existent page (ID: {page_id}). Result discarded.")
-            self.main_win._set_ui_state("idle")
             return
 
         row, page = page_and_index
@@ -295,6 +299,7 @@ class WorkerHandler(QObject):
         self.main_win.page_list_manager.update_list_item_text(row)
         self.main_win.page_list_manager.update_total_duration()
         self.main_win.list_pages.setCurrentRow(row)
+        
         if waveform_data is not None:
             if self.main_win._work_dir:
                 save_waveform_cache(self.main_win._work_dir, page_id, waveform_data)
@@ -302,14 +307,18 @@ class WorkerHandler(QObject):
         else:
             self.main_win.waveform_widget.clear_waveform()
 
-        sender_worker = self.sender()
-        if sender_worker == self.audio_worker:
-            self.audio_thread = None
-            self.audio_worker = None
-        elif sender_worker == self.audio_import_worker:
-            self.audio_import_thread = None
-            self.audio_import_worker = None
+    def _on_record_processing_finished(self, page_id: str, rel_path: str, duration: float, waveform_data):
+        self._finalize_audio_processing(page_id, rel_path, duration, waveform_data)
 
+        self.audio_thread = None
+        self.audio_worker = None
+        self.main_win._set_ui_state("idle")
+
+    def _on_audio_import_finished(self, page_id: str, rel_path: str, duration: float, waveform_data):
+        self._finalize_audio_processing(page_id, rel_path, duration, waveform_data)
+
+        self.audio_import_thread = None
+        self.audio_import_worker = None
         self.main_win._set_ui_state("idle")
 
     def _on_audio_import_error(self, page_id: str, error_message: str):
@@ -374,6 +383,62 @@ class WorkerHandler(QObject):
         self.main_win._set_ui_state("idle")
         self.audio_thread = None
         self.audio_worker = None
+
+    def start_waveform_load(self, audio_path: str, widget_width: int, page_id: str):
+        if self.waveform_thread and self.waveform_thread.isRunning():
+            logger.warning("Waveform load is already in progress. Ignoring new request.")
+            return
+
+        worker_instance = WaveformLoadWorker(audio_path, widget_width, page_id)
+        
+        self.waveform_worker, self.waveform_thread = self._start_worker(
+            worker_instance,
+            on_finished=self._on_waveform_loaded,
+            on_error=self._on_waveform_load_error
+        )
+
+    def _on_waveform_loaded(self, page_id: str, waveform_data):
+        logger.info(f"Waveform data loaded for page_id: {page_id}")
+        
+        if not self.main_win._project:
+            return # Project was closed
+
+        current_row = self.main_win.list_pages.currentRow()
+        if current_row < 0 or current_row >= len(self.main_win._project.pages):
+            return # No selection or invalid row
+
+        current_page = self.main_win._project.pages[current_row]
+        
+        # Only update the widget if the loaded data corresponds to the *currently* selected page
+        if current_page.page_id == page_id:
+            if waveform_data is not None:
+                if self.main_win._work_dir:
+                    save_waveform_cache(self.main_win._work_dir, page_id, waveform_data)
+                
+                duration = current_page.duration if current_page.duration is not None else 0.0
+                self.main_win.waveform_widget.set_waveform(waveform_data, duration)
+            else:
+                self.main_win.waveform_widget.clear_waveform()
+        else:
+            logger.info(f"Loaded waveform for {page_id}, but user is now on {current_page.page_id}. Discarding.")
+
+        self.waveform_thread = None
+        self.waveform_worker = None
+
+    def _on_waveform_load_error(self, page_id: str, error_message: str):
+        logger.error(f"Failed to load waveform for page_id {page_id}: {error_message}")
+        
+        # Check if the error corresponds to the currently selected page
+        if self.main_win._project:
+            current_row = self.main_win.list_pages.currentRow()
+            if 0 <= current_row < len(self.main_win._project.pages):
+                current_page = self.main_win._project.pages[current_row]
+                if current_page.page_id == page_id:
+                    self.main_win.waveform_widget.clear_waveform()
+        
+        self.waveform_thread = None
+        self.waveform_worker = None
+
 
     def start_export(self):
         if not self._validate_project_for_export():

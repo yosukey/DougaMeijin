@@ -17,7 +17,7 @@ from exporter import export_project_to_mp4
 from utils import (
     resample_audio, audio_duration_seconds, trim_audio_end,
     load_waveform_data, get_media_duration_seconds, ffmpeg_executable_path,
-    get_audio_stream_info
+    get_audio_stream_info, FFprobeError
 )
 from config import (
     MIN_AUDIO_FILESIZE_BYTES, AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC,
@@ -110,9 +110,15 @@ class AudioImportWorker(QObject):
         
         try:
             if not resample_audio(str(self.source_path), str(temp_wav_path), int(AUDIO_RATE)):
-                stream_info, _ = get_audio_stream_info(str(self.source_path))
-                codec_name = stream_info.get('codec_name', '不明') if stream_info else '不明'
-                sample_rate = stream_info.get('sample_rate', 'N/A') if stream_info else 'N/A'
+                codec_name = '不明'
+                sample_rate = 'N/A'
+                try:
+                    stream_info = get_audio_stream_info(str(self.source_path))
+                    codec_name = stream_info.get('codec_name', '不明')
+                    sample_rate = stream_info.get('sample_rate', 'N/A')
+                except FFprobeError as e:
+                    logger.warning(f"Could not get audio info for error message: {e}")
+                
                 error_detail = (
                     f"音声ファイルの変換に失敗しました。\n\n"
                     f"ファイル情報: コーデック={codec_name}, サンプルレート={sample_rate}Hz\n\n"
@@ -120,7 +126,7 @@ class AudioImportWorker(QObject):
                 )
                 raise RuntimeError(error_detail)
             
-            final_duration = audio_duration_seconds(str(temp_wav_path))
+            final_duration = get_media_duration_seconds(str(temp_wav_path))
 
             if final_duration < MIN_RECORDING_DURATION_SEC:
                 raise RuntimeError(f"音声ファイルが短すぎます。{MIN_RECORDING_DURATION_SEC:.1f}秒以上のファイルが必要です。（検出された長さ: {final_duration:.2f}秒）")
@@ -358,3 +364,25 @@ class FFmpegDownloadWorker(QObject):
                         self.progress.emit(downloaded, total_size, message)
             except OSError as e:
                 raise IOError(f"ファイルの書き込みに失敗しました。ディスクの空き容量が不足している可能性があります。\n詳細: {e}")
+
+class WaveformLoadWorker(QObject):
+    finished = Signal(str, object)  # page_id, waveform_data (np.ndarray)
+    error = Signal(str, str)        # page_id, error_message
+
+    def __init__(self, audio_path: str, widget_width: int, page_id: str):
+        super().__init__()
+        self.audio_path = audio_path
+        self.widget_width = widget_width
+        self.page_id = page_id
+
+    @Slot()
+    def process(self):
+        try:
+            logger.info(f"WaveformLoadWorker starting for page_id: {self.page_id}")
+            waveform_data = load_waveform_data(self.audio_path, self.widget_width)
+            if waveform_data is None:
+                raise RuntimeError("load_waveform_data returned None.")
+            self.finished.emit(self.page_id, waveform_data)
+        except Exception as e:
+            logger.error(f"WaveformLoadWorker failed for page {self.page_id}: {e}")
+            self.error.emit(self.page_id, f"波形データの読み込みに失敗しました: {e}")
