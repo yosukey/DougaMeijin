@@ -66,6 +66,11 @@ class WorkerHandler(QObject):
         return worker, thread
 
     def start_image_import(self, paths: List[str]):
+        if self.import_thread and self.import_thread.isRunning():
+            QMessageBox.warning(self.main_win, "処理中", "現在、別の画像のインポート処理が実行中です。完了するまでお待ちください。")
+            logger.warning("Image import requested but previous thread is still running.")
+            return
+
         if not self.main_win._project or not self.main_win._work_dir:
             return
 
@@ -187,6 +192,11 @@ class WorkerHandler(QObject):
         dialog.exec()
 
     def handle_audio_file_drop(self, source_path: str):
+        if self.audio_import_thread and self.audio_import_thread.isRunning():
+            QMessageBox.warning(self.main_win, "処理中", "現在、別の音声インポート処理が実行中です。完了するまでお待ちください。")
+            logger.warning("Audio import requested but previous thread is still running.")
+            return
+
         logger.info(f"Audio file dropped onto waveform widget: {source_path}")
         
         row = self.main_win.list_pages.currentRow()
@@ -254,6 +264,10 @@ class WorkerHandler(QObject):
         )
 
     def start_audio_processing(self, audio_path: str, row: int):
+        if self.audio_thread and self.audio_thread.isRunning():
+            logger.warning("Audio processing requested but previous thread is still running. Ignoring.")
+            return
+
         if not self.main_win._project or not (0 <= row < len(self.main_win._project.pages)):
             return
         
@@ -441,6 +455,10 @@ class WorkerHandler(QObject):
 
 
     def start_export(self):
+        if self.export_thread and self.export_thread.isRunning():
+             logger.warning("Export requested but previous thread is still running.")
+             return
+
         if not self._validate_project_for_export():
             return
 
