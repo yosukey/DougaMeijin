@@ -231,10 +231,12 @@ class AudioRecorder(QObject):
                     self._io_device = temp_buffer_device
                     
                     locker.unlock()
-                    self._handle_ready_read()
-                    locker.relock()
+                    
+                    try:
+                        self._handle_ready_read()
+                    finally:
+                        self._io_device = original_io_device
 
-                    self._io_device = original_io_device
         except Exception as e:
             logger.error(f"Error during final buffer drain: {e}")
         finally:

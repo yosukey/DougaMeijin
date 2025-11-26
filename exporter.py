@@ -12,16 +12,9 @@ from pathlib import Path
 from models import Project
 from utils import ffmpeg_executable_path
 from config import (
-    RESOLUTION_MAP,
-    H264_PRESET,
-    H264_CRF,
-    AUDIO_BITRATE,
-    AUDIO_RATE,
-    AUDIO_CHANNELS,
-    GOP_MULTIPLIER,
-    MIN_EXPORT_FPS,
-    MIN_AUDIO_DURATION_SEC,
-    TRANSITION_TOTAL_SECONDS
+    RESOLUTION_MAP, H264_PRESET, H264_CRF, AUDIO_BITRATE,
+    AUDIO_RATE, AUDIO_CHANNELS, GOP_MULTIPLIER, MIN_EXPORT_FPS,
+    MIN_AUDIO_DURATION_SEC, TRANSITION_TOTAL_SECONDS
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +50,7 @@ def _run_subprocess(command: list, is_canceled_callback=None):
         ES_SYSTEM_REQUIRED = 0x00000001
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
 
+    process = None
     try:
         startupinfo = _get_startup_info()
         
@@ -66,10 +60,12 @@ def _run_subprocess(command: list, is_canceled_callback=None):
             last_read_pos = 0
             while True:
                 if is_canceled_callback and is_canceled_callback():
+                    logger.info("Kill signal received. Terminating FFmpeg process...")
                     try:
                         process.terminate()
-                        time.sleep(0.1)
-                        if process.poll() is None:
+                        try:
+                            process.wait(timeout=0.5)
+                        except subprocess.TimeoutExpired:
                             process.kill()
                     except OSError:
                         pass
@@ -108,6 +104,12 @@ def _run_subprocess(command: list, is_canceled_callback=None):
         
         raise RuntimeError(f"FFmpeg process failed: {e}")
     finally:
+        if process and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
         if sys.platform == "win32":
             ES_CONTINUOUS = 0x80000000
             ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
@@ -305,7 +307,8 @@ def _export_with_xfade(
                 )
 
                 filter_complex = (
-                    f"[0:v][1:v]xfade=transition={transition_type}:duration={quantized_transition_sec}:offset=0[v];"
+                    f"[0:v][1:v]xfade=transition={transition_type}:"
+                    f"duration={quantized_transition_sec}:offset=0[v];"
                     f"[0:a][1:a]acrossfade=d={quantized_transition_sec}[a]"
                 )
                 
