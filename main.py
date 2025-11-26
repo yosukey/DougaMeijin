@@ -3,6 +3,12 @@ import sys
 import ctypes
 import time
 import logging
+import glob
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 from PySide6.QtCore import QTranslator, QLibraryInfo, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -19,12 +25,33 @@ from debug_stream import StdStreamHandler
 from logger_setup import setup_logging
 from log_handler import QtLogHandler
 
+def cleanup_stale_temp_dirs():
+    try:
+        temp_root = tempfile.gettempdir()
+        stale_dirs = glob.glob(os.path.join(temp_root, "sbv_*"))
+        
+        cleaned_count = 0
+        for d in stale_dirs:
+            path = Path(d)
+            if path.is_dir():
+                try:
+                    shutil.rmtree(path, ignore_errors=True)
+                    cleaned_count += 1
+                except OSError:
+                    pass
+        if cleaned_count > 0:
+            logging.info(f"Cleaned up {cleaned_count} stale temporary directories from previous sessions.")
+    except Exception as e:
+        logging.warning(f"Failed to cleanup stale temp dirs: {e}")
+
 def main():
     Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
     app = QApplication(sys.argv)
     
     setup_logging()
+    
+    cleanup_stale_temp_dirs()
     
     win = MainWindow()
     

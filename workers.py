@@ -118,6 +118,8 @@ class AudioImportWorker(QObject):
                     sample_rate = stream_info.get('sample_rate', 'N/A')
                 except FFprobeError as e:
                     logger.warning(f"Could not get audio info for error message: {e}")
+                except Exception as e:
+                    logger.warning(f"Unexpected error getting audio info: {e}")
                 
                 error_detail = (
                     f"音声ファイルの変換に失敗しました。\n\n"

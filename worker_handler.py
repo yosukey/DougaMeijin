@@ -470,6 +470,9 @@ class WorkerHandler(QObject):
         self.export_progress_dialog.setWindowTitle("書き出し中")
         self.export_progress_dialog.setMinimumDuration(0)
         
+        self.export_progress_dialog.setAutoClose(False)
+        self.export_progress_dialog.setAutoReset(False)
+        
         self.export_progress_dialog.canceled.connect(self.request_export_cancel)
         
         self.export_worker = ExportWorker(self.main_win._project, str(self.main_win._work_dir), out)
@@ -539,19 +542,23 @@ class WorkerHandler(QObject):
             self.main_win.statusBar().showMessage("動画の書き出しをキャンセルしています...", 0)
             if self.export_progress_dialog:
                 self.export_progress_dialog.setCancelButton(None)
+                self.export_progress_dialog.setLabelText("キャンセル処理中...お待ちください")
 
     def _on_export_progress_update(self, value: int, total: int, message: str):
-        if self.export_progress_dialog:
+        if self.export_progress_dialog and self.export_progress_dialog.isVisible():
             self.export_progress_dialog.setMaximum(total)
             self.export_progress_dialog.setValue(value)
             self.export_progress_dialog.setLabelText(message)
 
     def _on_export_finished(self, was_canceled: bool):
-        try:
-            self.export_progress_dialog.canceled.disconnect(self.request_export_cancel)
-        except RuntimeError:
-            pass
-        self.export_progress_dialog.close()
+        if self.export_progress_dialog:
+            try:
+                self.export_progress_dialog.canceled.disconnect(self.request_export_cancel)
+            except RuntimeError:
+                pass
+            self.export_progress_dialog.close()
+            self.export_progress_dialog = None
+
         QApplication.restoreOverrideCursor()
         self.main_win._set_ui_state("idle")
 
@@ -564,12 +571,14 @@ class WorkerHandler(QObject):
         self.export_worker = None
 
     def _on_export_error(self, error_message: str):
-        try:
-            self.export_progress_dialog.canceled.disconnect(self.request_export_cancel)
-        except RuntimeError:
-            pass
+        if self.export_progress_dialog:
+            try:
+                self.export_progress_dialog.canceled.disconnect(self.request_export_cancel)
+            except RuntimeError:
+                pass
+            self.export_progress_dialog.close()
+            self.export_progress_dialog = None
 
-        self.export_progress_dialog.close()
         QApplication.restoreOverrideCursor()
         self.main_win._set_ui_state("idle")
         QMessageBox.critical(self.main_win, "書き出し失敗", error_message)
