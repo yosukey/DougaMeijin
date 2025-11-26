@@ -139,9 +139,7 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
                 if progress_callback:
                     progress_callback(f"{progress_prefix} PDF展開中: {original_filename}")
                 
-                doc = None
-                try:
-                    doc = fitz.open(src_path)
+                with fitz.open(src_path) as doc:
                     num_pdf_pages = len(doc)
                     
                     if num_pdf_pages > MAX_PDF_PAGE_COUNT:
@@ -181,9 +179,6 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
                             original_resolution=f"{pix.width}x{pix.height}"
                         )
                         new_pages.append(new_page)
-                finally:
-                    if doc:
-                        doc.close()
             
             elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp"):
                 if progress_callback:

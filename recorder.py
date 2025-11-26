@@ -2,7 +2,7 @@
 import wave
 import os
 import logging
-from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
+from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker, QBuffer, QIODevice
 from PySide6.QtMultimedia import (
     QAudioDevice,
     QAudioSource,
@@ -222,20 +222,24 @@ class AudioRecorder(QObject):
                     padding_needed = (sample_size - len(self._buffer) % sample_size) % sample_size
                     final_padded_data = self._buffer + (b'\x00' * padding_needed)
                     
-                    from PySide6.QtCore import QBuffer, QIODevice
                     temp_buffer_device = QBuffer()
                     temp_buffer_device.setData(final_padded_data)
-                    temp_buffer_device.open(QIODevice.OpenModeFlag.ReadOnly)
                     
-                    original_io_device = self._io_device
-                    self._io_device = temp_buffer_device
-                    
-                    locker.unlock()
-                    
-                    try:
-                        self._handle_ready_read()
-                    finally:
-                        self._io_device = original_io_device
+                    if temp_buffer_device.open(QIODevice.OpenModeFlag.ReadOnly):
+                        original_io_device = self._io_device
+                        self._io_device = temp_buffer_device
+                        
+                        locker.unlock()
+                        
+                        try:
+                            self._handle_ready_read()
+                        except Exception as e:
+                            logger.error(f"Error processing final buffer: {e}")
+                        finally:
+                            self._io_device = original_io_device
+                            temp_buffer_device.close()
+                    else:
+                        logger.error("Failed to open temporary buffer for final drain.")
 
         except Exception as e:
             logger.error(f"Error during final buffer drain: {e}")

@@ -153,6 +153,8 @@ class PlaybackHandler(QObject):
                 self._player.errorOccurred.disconnect(self._on_player_error)
             except RuntimeError:
                 pass
+            
+            self._player.setAudioOutput(None)
             self._player.deleteLater()
         
         if self._audio_output:
