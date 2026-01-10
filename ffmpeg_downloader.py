@@ -1,118 +1,12 @@
 # ffmpeg_downloader.py
-import os
-import shutil
-import json
-import zipfile
-import hashlib
-import tempfile
-import uuid
-import urllib.request
-from urllib.error import URLError
-from typing import Tuple
-from pathlib import Path
-
 from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtWidgets import (
-    QMessageBox, QProgressDialog, QApplication, QDialog,
+    QMessageBox, QProgressDialog, QDialog,
     QVBoxLayout, QLabel, QDialogButtonBox
 )
 
-import utils
-from config import (
-    FFMPEG_INSTALL_DIR, FFMPEG_API_URL, FFMPEG_TARGET_ZIP_FILENAME,
-    FFMPEG_GLOBAL_CHECKSUM_FILENAME, FFMPEG_DOWNLOADER_USER_AGENT
-)
 from utils import gracefully_shutdown_thread
-
-FFMPEG_DOWNLOAD_CANCELED = "ダウンロードがキャンセルされました。"
-
-
-def check_ffmpeg_exists() -> bool:
-    try:
-        utils.ffmpeg_executable_path()
-        return True
-    except FileNotFoundError:
-        return False
-
-def _get_urls_and_hash() -> Tuple[str, str]:
-    req = urllib.request.Request(FFMPEG_API_URL, headers={"User-Agent": FFMPEG_DOWNLOADER_USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as response:
-        if response.status != 200:
-            raise RuntimeError(f"GitHub APIへのアクセスに失敗しました (Status: {response.status})")
-        data = json.loads(response.read())
-
-    assets = data.get("assets", [])
-    zip_url, checksums_url = None, None
-    for asset in assets:
-        if asset.get("name") == FFMPEG_TARGET_ZIP_FILENAME:
-            zip_url = asset.get("browser_download_url")
-        elif asset.get("name") == FFMPEG_GLOBAL_CHECKSUM_FILENAME:
-            checksums_url = asset.get("browser_download_url")
-
-    if not (zip_url and checksums_url):
-        raise RuntimeError("API応答から必要なアセットが見つかりませんでした。")
-
-    hash_req = urllib.request.Request(checksums_url, headers={"User-Agent": FFMPEG_DOWNLOADER_USER_AGENT})
-    with urllib.request.urlopen(hash_req, timeout=15) as response:
-        hash_text_data = response.read().decode("utf-8")
-
-    for line in hash_text_data.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1].endswith(FFMPEG_TARGET_ZIP_FILENAME):
-            return zip_url, parts[0]
-    
-    raise RuntimeError("チェックサムファイルからハッシュ値の取得に失敗しました。")
-
-def _verify_hash(file_path: Path, expected_hash: str, progress_callback) -> bool:
-    sha256 = hashlib.sha256()
-    file_size = file_path.stat().st_size
-    if file_size == 0: return False
-
-    processed_size = 0
-    with file_path.open("rb") as f:
-        while chunk := f.read(4 * 1024 * 1024):
-            sha256.update(chunk)
-            processed_size += len(chunk)
-            progress_callback(processed_size, file_size, f"ファイルを検証中... ({processed_size/file_size*100:.0f}%)")
-    
-    return sha256.hexdigest().lower() == expected_hash.lower()
-
-def _install_zip(zip_path: Path):
-    storage_path = utils.get_data_storage_path()
-    final_install_dir = storage_path / FFMPEG_INSTALL_DIR
-    temp_extract_dir = Path(tempfile.mkdtemp(dir=storage_path, prefix="ffmpeg_extract_"))
-
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            root_dir_in_zip = zf.infolist()[0].filename
-            for member in zf.infolist():
-                relative_path = Path(member.filename).relative_to(root_dir_in_zip)
-                target_path = temp_extract_dir / relative_path
-                if member.is_dir():
-                    target_path.mkdir(parents=True, exist_ok=True)
-                else:
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as source, target_path.open("wb") as target:
-                        shutil.copyfileobj(source, target)
-        
-        backup_dir = None
-        if final_install_dir.exists():
-            backup_dir = Path(f"{final_install_dir}_{uuid.uuid4().hex}.bak")
-            final_install_dir.rename(backup_dir)
-        
-        try:
-            temp_extract_dir.rename(final_install_dir)
-        except Exception as e:
-            if backup_dir and backup_dir.exists():
-                backup_dir.rename(final_install_dir)
-            raise e
-
-        if backup_dir and backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
-    finally:
-        if temp_extract_dir.exists():
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-
+from workers import FFmpegDownloadWorker, FFMPEG_DOWNLOAD_CANCELED
 
 class FFmpegDownloaderDialog(QDialog):
     def __init__(self, parent=None):
@@ -141,8 +35,6 @@ class FFmpegDownloaderDialog(QDialog):
         layout.addWidget(self.button_box)
 
     def start_download(self):
-        from workers import FFmpegDownloadWorker
-        
         self.button_box.hide()
         if self.progress_dialog is None:
             self.progress_dialog = QProgressDialog(self)

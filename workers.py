@@ -4,31 +4,115 @@ import shutil
 import json
 import logging
 import urllib.request
+import zipfile
+import hashlib
+import uuid
 from urllib.error import URLError
-from typing import List
+from typing import List, Tuple
 from PySide6.QtCore import QObject, Signal, Slot, QUrl
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from pathlib import Path
 import tempfile
 
 from models import Project
-from persistence import process_new_images
+from persistence import process_new_images, save_project_to_zip
 from exporter import export_project_to_mp4
 from utils import (
     resample_audio, audio_duration_seconds, trim_audio_end,
     load_waveform_data, get_media_duration_seconds, ffmpeg_executable_path,
-    get_audio_stream_info, FFprobeError
+    get_audio_stream_info, FFprobeError, get_data_storage_path
 )
 from config import (
     MIN_AUDIO_FILESIZE_BYTES, AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC,
     MIN_RECORDING_DURATION_SEC, MIN_AUDIO_DURATION_SEC,
-    GITHUB_REPO_ID, APP_INTERNAL_NAME, APP_VERSION
-)
-from ffmpeg_downloader import (
-    _get_urls_and_hash, _verify_hash, _install_zip, FFMPEG_DOWNLOAD_CANCELED
+    GITHUB_REPO_ID, APP_INTERNAL_NAME, APP_VERSION,
+    FFMPEG_INSTALL_DIR, FFMPEG_API_URL, FFMPEG_TARGET_ZIP_FILENAME,
+    FFMPEG_GLOBAL_CHECKSUM_FILENAME, FFMPEG_DOWNLOADER_USER_AGENT
 )
 
 logger = logging.getLogger(__name__)
+
+FFMPEG_DOWNLOAD_CANCELED = "ダウンロードがキャンセルされました。"
+
+def _get_urls_and_hash() -> Tuple[str, str]:
+    req = urllib.request.Request(FFMPEG_API_URL, headers={"User-Agent": FFMPEG_DOWNLOADER_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=15) as response:
+        if response.status != 200:
+            raise RuntimeError(f"GitHub APIへのアクセスに失敗しました (Status: {response.status})")
+        data = json.loads(response.read())
+
+    assets = data.get("assets", [])
+    zip_url, checksums_url = None, None
+    for asset in assets:
+        if asset.get("name") == FFMPEG_TARGET_ZIP_FILENAME:
+            zip_url = asset.get("browser_download_url")
+        elif asset.get("name") == FFMPEG_GLOBAL_CHECKSUM_FILENAME:
+            checksums_url = asset.get("browser_download_url")
+
+    if not (zip_url and checksums_url):
+        raise RuntimeError("API応答から必要なアセットが見つかりませんでした。")
+
+    hash_req = urllib.request.Request(checksums_url, headers={"User-Agent": FFMPEG_DOWNLOADER_USER_AGENT})
+    with urllib.request.urlopen(hash_req, timeout=15) as response:
+        hash_text_data = response.read().decode("utf-8")
+
+    for line in hash_text_data.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[-1].endswith(FFMPEG_TARGET_ZIP_FILENAME):
+            return zip_url, parts[0]
+    
+    raise RuntimeError("チェックサムファイルからハッシュ値の取得に失敗しました。")
+
+def _verify_hash(file_path: Path, expected_hash: str, progress_callback) -> bool:
+    sha256 = hashlib.sha256()
+    file_size = file_path.stat().st_size
+    if file_size == 0: return False
+
+    processed_size = 0
+    with file_path.open("rb") as f:
+        while chunk := f.read(4 * 1024 * 1024):
+            sha256.update(chunk)
+            processed_size += len(chunk)
+            progress_callback(processed_size, file_size, f"ファイルを検証中... ({processed_size/file_size*100:.0f}%)")
+    
+    return sha256.hexdigest().lower() == expected_hash.lower()
+
+def _install_zip(zip_path: Path):
+    storage_path = get_data_storage_path()
+    final_install_dir = storage_path / FFMPEG_INSTALL_DIR
+    temp_extract_dir = Path(tempfile.mkdtemp(dir=storage_path, prefix="ffmpeg_extract_"))
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            root_dir_in_zip = zf.infolist()[0].filename
+            for member in zf.infolist():
+                relative_path = Path(member.filename).relative_to(root_dir_in_zip)
+                target_path = temp_extract_dir / relative_path
+                if member.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                else:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as source, target_path.open("wb") as target:
+                        shutil.copyfileobj(source, target)
+        
+        backup_dir = None
+        if final_install_dir.exists():
+            backup_dir = Path(f"{final_install_dir}_{uuid.uuid4().hex}.bak")
+            final_install_dir.rename(backup_dir)
+        
+        try:
+            temp_extract_dir.rename(final_install_dir)
+        except Exception as e:
+            if backup_dir and backup_dir.exists():
+                backup_dir.rename(final_install_dir)
+            raise e
+
+        if backup_dir and backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+    finally:
+        if temp_extract_dir.exists():
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
 
 class AudioProcessingWorker(QObject):
     finished = Signal(str, str, float, object)  # page_id, rel_path, duration, waveform_data
@@ -203,6 +287,24 @@ class ExportWorker(QObject):
             else:
                 logger.info(f"Export process canceled (Exception caught: {e}).")
                 self.finished.emit(False)
+
+class SaveProjectWorker(QObject):
+    finished = Signal(bool, str)
+
+    def __init__(self, work_dir: str, project: Project, save_path: str):
+        super().__init__()
+        self.work_dir = work_dir
+        self.project = project
+        self.save_path = save_path
+
+    def process(self):
+        try:
+            save_project_to_zip(self.work_dir, self.project, self.save_path)
+            self.finished.emit(True, self.save_path)
+        except Exception as e:
+            logger.error(f"SaveProjectWorker failed: {e}", exc_info=True)
+            self.finished.emit(False, str(e))
+
 
 class UpdateChecker(QObject):
     finished = Signal(str, str)
