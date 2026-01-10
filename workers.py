@@ -307,9 +307,9 @@ class FFmpegDownloadWorker(QObject):
         except Exception as e:
             self.finished.emit(False, f"エラーが発生しました: {e}")
         finally:
-            if temp_work_path.exists():
+            if zip_path.exists():
                 try:
-                    temp_work_path.unlink()
+                    zip_path.unlink()
                 except OSError:
                     pass
     

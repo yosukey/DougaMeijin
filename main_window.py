@@ -476,7 +476,7 @@ class MainWindow(QMainWindow):
     def _cleanup_work_dir(self):
         if self._work_dir and self._work_dir.exists():
             try:
-                shutil.rmtree(self._work_dir, ignore_errors=True)
+                shutil.rmtree(self._work_dir, ignore_errors=False)
                 logger.info(f"Cleaned up work directory: {self._work_dir}")
             except Exception as e:
                 logger.error(f"Failed to cleanup work dir {self._work_dir}. Reason: {e}")
