@@ -2,7 +2,7 @@
 import wave
 import os
 import logging
-from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker, QBuffer, QIODevice
+from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker, QIODevice
 from PySide6.QtMultimedia import (
     QAudioDevice,
     QAudioSource,
@@ -106,12 +106,17 @@ class AudioRecorder(QObject):
         if not self._io_device or not self._output_file:
             return
 
-        locker = QMutexLocker(self._buffer_mutex)
-        
-        data = self._buffer + self._io_device.readAll()
-        if not data:
+        new_data = self._io_device.readAll()
+        if not new_data:
             return
 
+        self._process_raw_data(new_data.data())
+
+    def _process_raw_data(self, new_bytes: bytes):
+        locker = QMutexLocker(self._buffer_mutex)
+        
+        data = self._buffer + new_bytes
+        
         sample_size = self._source_format.bytesPerSample()
         if sample_size <= 0:
             self._buffer = b''
@@ -213,33 +218,26 @@ class AudioRecorder(QObject):
                 except RuntimeError:
                     pass
                 
-                self._handle_ready_read()
+                remaining_data = self._io_device.readAll()
+                if remaining_data:
+                    self._process_raw_data(remaining_data.data())
             
             locker = QMutexLocker(self._buffer_mutex)
-            if self._buffer and self._output_file:
-                sample_size = self._source_format.bytesPerSample()
-                if sample_size > 0:
-                    padding_needed = (sample_size - len(self._buffer) % sample_size) % sample_size
-                    final_padded_data = self._buffer + (b'\x00' * padding_needed)
-                    
-                    temp_buffer_device = QBuffer()
-                    temp_buffer_device.setData(final_padded_data)
-                    
-                    if temp_buffer_device.open(QIODevice.OpenModeFlag.ReadOnly):
-                        original_io_device = self._io_device
-                        self._io_device = temp_buffer_device
-                        
-                        locker.unlock()
-                        
-                        try:
-                            self._handle_ready_read()
-                        except Exception as e:
-                            logger.error(f"Error processing final buffer: {e}")
-                        finally:
-                            self._io_device = original_io_device
-                            temp_buffer_device.close()
-                    else:
-                        logger.error("Failed to open temporary buffer for final drain.")
+            sample_size = self._source_format.bytesPerSample()
+            
+            if self._buffer and self._output_file and sample_size > 0:
+                remainder_len = len(self._buffer)
+                padding_needed = (sample_size - remainder_len % sample_size) % sample_size
+                
+                locker.unlock()
+                
+                if padding_needed > 0:
+                    try:
+                        self._process_raw_data(b'\x00' * padding_needed)
+                    except Exception as e:
+                        logger.error(f"Error processing final padding: {e}")
+            else:
+                locker.unlock()
 
         except Exception as e:
             logger.error(f"Error during final buffer drain: {e}")

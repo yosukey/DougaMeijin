@@ -42,45 +42,36 @@ class AudioProcessingWorker(QObject):
         self.page_id = page_id
 
     def process(self):
+        temp_work_path = self.audio_path.with_name(self.audio_path.stem + "_processing.wav")
+        
         try:
             if not self.audio_path.exists() or self.audio_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
                 raise RuntimeError("録音に失敗したか、音声が短すぎます。")
             
-            resampled_audio_path = self.audio_path.with_name(self.audio_path.stem + "_resampled.wav")
-            if resample_audio(str(self.audio_path), str(resampled_audio_path), int(AUDIO_RATE)):
-                try:
-                    resampled_audio_path.replace(self.audio_path)
-                    logger.info("Successfully replaced audio with resampled version.")
-                except OSError as e:
-                    logger.warning(f"Failed to replace audio with resampled version: {e}")
-            else:
-                logger.warning("Resampling/Normalization failed, using original audio.")
-                if resampled_audio_path.exists():
-                    try:
-                        resampled_audio_path.unlink()
-                    except OSError:
-                        pass
+            if not resample_audio(str(self.audio_path), str(temp_work_path), int(AUDIO_RATE)):
+                logger.warning("Resampling/Normalization failed, working with copy of original.")
+                shutil.copy2(self.audio_path, temp_work_path)
             
-            # --- Trimming ---
-            trimmed_audio_path = self.audio_path.with_name(self.audio_path.stem + "_trimmed.wav")
-            original_duration = audio_duration_seconds(str(self.audio_path))
+            original_duration = audio_duration_seconds(str(temp_work_path))
+            
             if original_duration > AUDIO_TRIM_END_DURATION_SEC:
+                temp_trim_path = self.audio_path.with_name(self.audio_path.stem + "_trimming.wav")
+                
                 # Y2 comment:
                 # Trim the very end of the audio clip. This is to remove the audible "click"
-                # sound that is often recorded when the user clicks the mouse button to stop recording.
-                if trim_audio_end(str(self.audio_path), str(trimmed_audio_path), AUDIO_TRIM_END_DURATION_SEC):
-                    try:
-                        trimmed_audio_path.replace(self.audio_path)
-                        logger.info("Successfully replaced audio with trimmed version.")
-                    except OSError as e:
-                        logger.warning(f"Failed to replace audio with trimmed version: {e}")
+                if trim_audio_end(str(temp_work_path), str(temp_trim_path), AUDIO_TRIM_END_DURATION_SEC):
+                    temp_trim_path.replace(temp_work_path)
+                    logger.info("Successfully trimmed audio end.")
                 else:
-                    logger.warning("Trimming failed, using the original audio.")
-                    if trimmed_audio_path.exists():
+                    logger.warning("Trimming failed, keeping untrimmed version.")
+                    if temp_trim_path.exists():
                         try:
-                            trimmed_audio_path.unlink()
+                            temp_trim_path.unlink()
                         except OSError:
                             pass
+
+            temp_work_path.replace(self.audio_path)
+            logger.info(f"Audio processing complete for {self.audio_path.name}")
 
             audio_rel_path = self.audio_path.relative_to(self.work_dir)
             rel_path_posix = audio_rel_path.as_posix()
@@ -150,11 +141,10 @@ class AudioImportWorker(QObject):
 
         except Exception as e:
             self.error.emit(self.page_id, str(e))
-        finally:
-            if temp_wav_path.exists():
-                try:
-                    temp_wav_path.unlink()
-                except OSError:
+            if self.audio_path.exists() and self.audio_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
+                try: 
+                    self.audio_path.unlink()
+                except OSError: 
                     pass
 
 class ImageImportWorker(QObject):
@@ -317,9 +307,9 @@ class FFmpegDownloadWorker(QObject):
         except Exception as e:
             self.finished.emit(False, f"エラーが発生しました: {e}")
         finally:
-            if zip_path.exists():
+            if temp_work_path.exists():
                 try:
-                    zip_path.unlink()
+                    temp_work_path.unlink()
                 except OSError:
                     pass
     
