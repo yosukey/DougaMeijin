@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QListWidgetItem, QLabel,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QProgressDialog,
     QDialog, QTextBrowser, QDialogButtonBox,
     QVBoxLayout, QPushButton
 )
@@ -36,7 +36,7 @@ from config import *
 
 from main_window_ui import UiBuilder
 from list_delegate import RichTextDelegate
-from workers import UpdateChecker, FFmpegCheckWorker
+from workers import UpdateChecker, FFmpegCheckWorker, SaveProjectWorker
 from audio_handlers import PlaybackHandler, RecorderHandler, AudioSessionManager
 from debug_console import DebugConsoleDialog
 from ffmpeg_downloader import FFmpegDownloaderDialog
@@ -623,18 +623,44 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("保存がキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
                 return False
         
-        try:
-            logger.info(f"Saving project to: {path}")
-            save_project_to_zip(str(self._work_dir), self._project, path)
-            
+        progress = QProgressDialog("プロジェクトを保存中...", None, 0, 0, self)
+        progress.setWindowTitle("保存中")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        
+        thread = QThread(self)
+        worker = SaveProjectWorker(str(self._work_dir), self._project, path)
+        worker.moveToThread(thread)
+        
+        result_holder = {"success": False, "message": ""}
+
+        def on_finished(success, message):
+            result_holder["success"] = success
+            result_holder["message"] = message
+            progress.accept()
+
+        worker.finished.connect(on_finished)
+        worker.finished.connect(thread.quit)
+        thread.started.connect(worker.process)
+        thread.finished.connect(thread.deleteLater)
+        worker.finished.connect(worker.deleteLater)
+
+        logger.info(f"Starting background save to: {path}")
+        thread.start()
+        
+        progress.exec()
+
+        if result_holder["success"]:
             self._project_zip_path = path
             self.statusBar().showMessage("プロジェクトを保存しました", STATUS_BAR_SAVE_MSG_DURATION_MS)
             self._mark_as_dirty(False)
             logger.info("Save successful.")
             return True
-        except Exception as e:
-            QMessageBox.critical(self, "保存エラー", f"プロジェクトの保存に失敗しました:\n{e}")
-            logger.error(f"Project save failed: {e}", exc_info=True)
+        else:
+            error_msg = result_holder["message"]
+            QMessageBox.critical(self, "保存エラー", f"プロジェクトの保存に失敗しました:\n{error_msg}")
+            logger.error(f"Project save failed: {error_msg}")
             return False
 
     def _save_project(self) -> bool:
