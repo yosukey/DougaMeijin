@@ -335,10 +335,10 @@ class WorkerHandler(QObject):
         self.audio_import_worker = None
         self.main_win._set_ui_state("idle")
 
-    def _on_audio_import_error(self, page_id: str, error_message: str):
-        QMessageBox.critical(self.main_win, "音声インポートエラー", error_message)
-        self.main_win.statusBar().showMessage("音声インポートに失敗しました", STATUS_BAR_MSG_DURATION_MS)
-        logger.error(f"Audio import worker failed for page_id {page_id}: {error_message}")
+    def _handle_audio_error_cleanup(self, page_id: str, error_title: str, error_message: str):
+        QApplication.restoreOverrideCursor()
+        QMessageBox.critical(self.main_win, error_title, error_message)
+        logger.error(f"{error_title} (Page ID: {page_id}): {error_message}")
         
         if self.main_win._work_dir:
             remove_waveform_cache(self.main_win._work_dir, page_id)
@@ -346,6 +346,7 @@ class WorkerHandler(QObject):
         session_manager = self.main_win.recorder_handler.session_manager
         
         if session_manager.is_active() and session_manager.get_active_page_id() == page_id:
+            logger.info("Attempting to restore session from backup.")
             original_state = session_manager.abort_session()
             
             page_and_index = next(((i, p) for i, p in enumerate(self.main_win._project.pages) if p.page_id == page_id), None)
@@ -365,36 +366,17 @@ class WorkerHandler(QObject):
              self.main_win._reset_page_audio_state_on_error(page_id)
 
         self.main_win._set_ui_state("idle")
+
+    def _on_audio_import_error(self, page_id: str, error_message: str):
+        self.main_win.statusBar().showMessage("音声インポートに失敗しました", STATUS_BAR_MSG_DURATION_MS)
+        self._handle_audio_error_cleanup(page_id, "音声インポートエラー", error_message)
+
         self.audio_import_thread = None
         self.audio_import_worker = None
 
     def _on_audio_processing_error(self, page_id: str, error_message: str):
-        QMessageBox.critical(self.main_win, "音声処理エラー", error_message)
-        logger.error(f"Audio processing worker failed for page_id {page_id}: {error_message}")
+        self._handle_audio_error_cleanup(page_id, "音声処理エラー", error_message)
         
-        if self.main_win._work_dir:
-            remove_waveform_cache(self.main_win._work_dir, page_id)
-            
-        session_manager = self.main_win.recorder_handler.session_manager
-        
-        if session_manager.is_active() and session_manager.get_active_page_id() == page_id:
-            logger.info("Audio processing failed. Attempting to restore from backup.")
-            original_state = session_manager.abort_session()
-            
-            page_and_index = next(((i, p) for i, p in enumerate(self.main_win._project.pages) if p.page_id == page_id), None)
-
-            if self.main_win._project and page_and_index:
-                row, page = page_and_index
-                page.audio = original_state.get("audio")
-                page.duration = original_state.get("duration")
-                page.audio_source_info = original_state.get("audio_source_info")
-                logger.info(f"Restored page metadata for row {row} (ID: {page_id}).")
-                self.main_win.page_list_manager.refresh()
-                self.main_win.list_pages.setCurrentRow(row)
-        else:
-            self.main_win._reset_page_audio_state_on_error(page_id)
-        
-        self.main_win._set_ui_state("idle")
         self.audio_thread = None
         self.audio_worker = None
 
@@ -415,15 +397,14 @@ class WorkerHandler(QObject):
         logger.info(f"Waveform data loaded for page_id: {page_id}")
         
         if not self.main_win._project:
-            return # Project was closed
+            return 
 
         current_row = self.main_win.list_pages.currentRow()
         if current_row < 0 or current_row >= len(self.main_win._project.pages):
-            return # No selection or invalid row
+            return 
 
         current_page = self.main_win._project.pages[current_row]
         
-        # Only update the widget if the loaded data corresponds to the *currently* selected page
         if current_page.page_id == page_id:
             if waveform_data is not None:
                 if self.main_win._work_dir:
@@ -442,7 +423,6 @@ class WorkerHandler(QObject):
     def _on_waveform_load_error(self, page_id: str, error_message: str):
         logger.error(f"Failed to load waveform for page_id {page_id}: {error_message}")
         
-        # Check if the error corresponds to the currently selected page
         if self.main_win._project:
             current_row = self.main_win.list_pages.currentRow()
             if 0 <= current_row < len(self.main_win._project.pages):
