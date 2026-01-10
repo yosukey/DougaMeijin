@@ -225,7 +225,6 @@ class MainWindow(QMainWindow):
         self.combo_audio_input.setEnabled(False)
         self.combo_audio_input.clear()
         self.combo_audio_input.addItem("マイクを検索中...")
-        QApplication.processEvents()
 
         init_error: Optional[str] = None
 
