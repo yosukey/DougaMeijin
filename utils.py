@@ -34,9 +34,9 @@ def natural_sort_key(s: str):
     out = []
     for num, text in parts:
         if num:
-            out.append(int(num))
+            out.append((0, int(num), ""))
         else:
-            out.append(text.lower())
+            out.append((1, 0, text.lower()))
     return out
 
 def audio_duration_seconds(path: str) -> float:
