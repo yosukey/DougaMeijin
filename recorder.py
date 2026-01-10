@@ -273,7 +273,7 @@ class AudioRecorder(QObject):
                 wav_file.setsampwidth(sample_width_bytes)
                 wav_file.setframerate(self._target_format.sampleRate())
                 
-                chunk_size = 8192 # Process in 8KB chunks
+                chunk_size = 1024 * 1024 
                 while True:
                     chunk = raw_file.read(chunk_size)
                     if not chunk:
@@ -299,4 +299,4 @@ class AudioRecorder(QObject):
                     logger.warning(f"Failed to clean up temporary raw file after error: {cleanup_e}")
 
     def is_recording(self) -> bool:
-        return self._is_recording
+            return self._is_recording

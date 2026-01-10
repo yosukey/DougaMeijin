@@ -147,8 +147,14 @@ def _process_pdf_file(
                 error_messages.append(message)
                 continue
 
-            with Image.open(io.BytesIO(pix.tobytes("png"))) as img_from_pdf:
-                source_img = img_from_pdf.convert("RGB")
+            mode = "RGB"
+            if pix.alpha:
+                mode = "RGBA"
+            
+            source_img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            
+            if mode == "RGBA":
+                source_img = source_img.convert("RGB")
 
             base_filename = f"{src_path.stem}_page_{page_num + 1:03d}{MASTER_IMAGE_EXTENSION}"
             assets = _create_and_save_assets(source_img, base_filename, images_dir, thumbnails_dir)
