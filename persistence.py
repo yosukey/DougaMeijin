@@ -5,7 +5,7 @@ import shutil
 import time
 import zipfile
 import logging
-from typing import List
+from typing import List, Tuple
 from PIL import Image, ImageOps, ImageFile
 import io
 from pathlib import Path
@@ -105,6 +105,94 @@ def _create_and_save_assets(
         "thumbnail_path": thumbnail_path,
     }
 
+def _process_pdf_file(
+    src_path: Path,
+    work_dir_path: Path,
+    images_dir: Path,
+    thumbnails_dir: Path,
+    progress_callback,
+    progress_prefix: str,
+    error_messages: List[str]
+) -> List[Page]:
+    original_filename = src_path.name
+    
+    if progress_callback:
+        progress_callback(f"{progress_prefix} PDF展開中: {original_filename}")
+    
+    new_pages = []
+    
+    with fitz.open(src_path) as doc:
+        num_pdf_pages = len(doc)
+        
+        if num_pdf_pages > MAX_PDF_PAGE_COUNT:
+            message = f"・{original_filename}: PDFのページ数が多すぎるためスキップされました ({num_pdf_pages} > {MAX_PDF_PAGE_COUNT})。"
+            error_messages.append(message)
+            return []
+
+        for page_num in range(num_pdf_pages):
+            if progress_callback:
+                progress_callback(f"{progress_prefix} PDFページ処理中: {original_filename} ({page_num + 1}/{num_pdf_pages})")
+            
+            page = doc.load_page(page_num)
+            
+            pix = page.get_pixmap(dpi=PDF_RENDER_DPI)
+            
+            if pix.width * pix.height > MAX_IMAGE_PIXELS:
+                px_mp = pix.width * pix.height / 1_000_000
+                max_px_mp = MAX_IMAGE_PIXELS / 1_000_000
+                message = (
+                    f"・{original_filename} (ページ {page_num + 1}): "
+                    f"解像度が高すぎるためスキップされました ({px_mp:.1f}Mpx > {max_px_mp:.1f}Mpx)。"
+                )
+                error_messages.append(message)
+                continue
+
+            with Image.open(io.BytesIO(pix.tobytes("png"))) as img_from_pdf:
+                source_img = img_from_pdf.convert("RGB")
+
+            base_filename = f"{src_path.stem}_page_{page_num + 1:03d}{MASTER_IMAGE_EXTENSION}"
+            assets = _create_and_save_assets(source_img, base_filename, images_dir, thumbnails_dir)
+            
+            image_rel_path = assets["image_path"].relative_to(work_dir_path)
+            new_page = Page(
+                image=image_rel_path.as_posix(),
+                original_filename=original_filename,
+                pdf_page_number=page_num + 1,
+                original_resolution=f"{pix.width}x{pix.height}"
+            )
+            new_pages.append(new_page)
+            
+    return new_pages
+
+def _process_image_file(
+    src_path: Path,
+    work_dir_path: Path,
+    images_dir: Path,
+    thumbnails_dir: Path,
+    progress_callback,
+    progress_prefix: str
+) -> Page:
+    original_filename = src_path.name
+
+    if progress_callback:
+        progress_callback(f"{progress_prefix} 画像処理中: {original_filename}")
+    
+    metadata = get_image_metadata(str(src_path))
+    
+    with Image.open(src_path) as img:
+        source_img = ImageOps.exif_transpose(img).convert("RGB")
+    
+    assets = _create_and_save_assets(source_img, original_filename, images_dir, thumbnails_dir)
+
+    image_rel_path = assets["image_path"].relative_to(work_dir_path)
+    new_page = Page(
+        image=image_rel_path.as_posix(),
+        original_filename=original_filename,
+        original_resolution=metadata.get("resolution"),
+        exif_orientation=metadata.get("exif_orientation")
+    )
+    return new_page
+
 def process_new_images(work_dir: str, source_paths: List[str], progress_callback=None) -> tuple[List[Page], List[str]]:
     work_dir_path = Path(work_dir)
     images_dir = work_dir_path / DIR_IMAGES
@@ -116,16 +204,17 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
     error_messages = []
     total_files = len(source_paths)
     
-    for i, src_path in enumerate(source_paths):
-        original_filename = Path(src_path).name
-        ext = Path(src_path).suffix.lower()
+    for i, src_path_str in enumerate(source_paths):
+        src_path = Path(src_path_str)
+        original_filename = src_path.name
+        ext = src_path.suffix.lower()
 
         progress_prefix = f"[{i + 1}/{total_files}]"
         if progress_callback:
             progress_callback(f"{progress_prefix} 処理中: {original_filename}")
 
         try:
-            file_size_mb = Path(src_path).stat().st_size / (1024 * 1024)
+            file_size_mb = src_path.stat().st_size / (1024 * 1024)
             if ext == ".pdf" and file_size_mb > MAX_PDF_FILE_SIZE_MB:
                 message = f"・{original_filename}: PDFファイルが大きすぎるためスキップされました ({file_size_mb:.1f}MB > {MAX_PDF_FILE_SIZE_MB}MB)。"
                 error_messages.append(message)
@@ -136,69 +225,18 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
                 continue
 
             if ext == ".pdf":
-                if progress_callback:
-                    progress_callback(f"{progress_prefix} PDF展開中: {original_filename}")
-                
-                with fitz.open(src_path) as doc:
-                    num_pdf_pages = len(doc)
-                    
-                    if num_pdf_pages > MAX_PDF_PAGE_COUNT:
-                        message = f"・{original_filename}: PDFのページ数が多すぎるためスキップされました ({num_pdf_pages} > {MAX_PDF_PAGE_COUNT})。"
-                        error_messages.append(message)
-                        continue
-
-                    for page_num in range(num_pdf_pages):
-                        if progress_callback:
-                            progress_callback(f"{progress_prefix} PDFページ処理中: {original_filename} ({page_num + 1}/{num_pdf_pages})")
-                        
-                        page = doc.load_page(page_num)
-                        
-                        pix = page.get_pixmap(dpi=PDF_RENDER_DPI)
-                        
-                        if pix.width * pix.height > MAX_IMAGE_PIXELS:
-                            px_mp = pix.width * pix.height / 1_000_000
-                            max_px_mp = MAX_IMAGE_PIXELS / 1_000_000
-                            message = (
-                                f"・{original_filename} (ページ {page_num + 1}): "
-                                f"解像度が高すぎるためスキップされました ({px_mp:.1f}Mpx > {max_px_mp:.1f}Mpx)。"
-                            )
-                            error_messages.append(message)
-                            continue
-
-                        with Image.open(io.BytesIO(pix.tobytes("png"))) as img_from_pdf:
-                            source_img = img_from_pdf.convert("RGB")
-
-                        base_filename = f"{Path(original_filename).stem}_page_{page_num + 1:03d}{MASTER_IMAGE_EXTENSION}"
-                        assets = _create_and_save_assets(source_img, base_filename, images_dir, thumbnails_dir)
-                        
-                        image_rel_path = assets["image_path"].relative_to(work_dir_path)
-                        new_page = Page(
-                            image=image_rel_path.as_posix(),
-                            original_filename=original_filename,
-                            pdf_page_number=page_num + 1,
-                            original_resolution=f"{pix.width}x{pix.height}"
-                        )
-                        new_pages.append(new_page)
+                pages = _process_pdf_file(
+                    src_path, work_dir_path, images_dir, thumbnails_dir,
+                    progress_callback, progress_prefix, error_messages
+                )
+                new_pages.extend(pages)
             
             elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp"):
-                if progress_callback:
-                    progress_callback(f"{progress_prefix} 画像処理中: {original_filename}")
-                
-                metadata = get_image_metadata(src_path)
-                
-                with Image.open(src_path) as img:
-                    source_img = ImageOps.exif_transpose(img).convert("RGB")
-                
-                assets = _create_and_save_assets(source_img, original_filename, images_dir, thumbnails_dir)
-
-                image_rel_path = assets["image_path"].relative_to(work_dir_path)
-                new_page = Page(
-                    image=image_rel_path.as_posix(),
-                    original_filename=original_filename,
-                    original_resolution=metadata.get("resolution"),
-                    exif_orientation=metadata.get("exif_orientation")
+                page = _process_image_file(
+                    src_path, work_dir_path, images_dir, thumbnails_dir,
+                    progress_callback, progress_prefix
                 )
-                new_pages.append(new_page)
+                new_pages.append(page)
 
         except Image.DecompressionBombError:
             max_px_mp = MAX_IMAGE_PIXELS / 1_000_000
