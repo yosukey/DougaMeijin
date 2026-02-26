@@ -639,8 +639,8 @@ class MainWindow(QMainWindow):
             progress.setLabelText("キャンセル処理中...")
             progress.setCancelButton(None)
 
-        worker.finished.connect(on_finished)
-        worker.update_progress.connect(on_progress)
+        worker.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
+        worker.update_progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
         thread.started.connect(worker.process)
         progress.canceled.connect(on_cancel)
 
@@ -651,6 +651,8 @@ class MainWindow(QMainWindow):
         progress.close()
         thread.quit()
         thread.wait(5000)
+        worker.moveToThread(self.thread())
+        worker.deleteLater()
         thread.deleteLater()
 
         if result_holder["success"]:
@@ -820,8 +822,8 @@ class MainWindow(QMainWindow):
             result_holder["error_messages"] = error_messages
             loop.quit()
 
-        worker.update_progress.connect(on_progress)
-        worker.finished.connect(on_finished)
+        worker.update_progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
         thread.started.connect(worker.process)
 
         progress.show()
@@ -830,6 +832,8 @@ class MainWindow(QMainWindow):
         progress.close()
         thread.quit()
         thread.wait(5000)
+        worker.moveToThread(self.thread())
+        worker.deleteLater()
         thread.deleteLater()
 
         self._set_ui_state("idle")
