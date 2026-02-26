@@ -113,22 +113,29 @@ class PageListManager:
     def on_pages_reordered(self, parent, start, end, destination, row):
         main = self.main_win
         if not main._project: return
-        
+
+        current_page_id = None
+        current_row = self.list_widget.currentRow()
+        if 0 <= current_row < len(main._project.pages):
+            current_page_id = main._project.pages[current_row].page_id
+
         logger.info(f"Reordering pages: Moving item from index {start} to {row}")
         moved_page = main._project.pages.pop(start)
 
         insert_index = row
         if row > start:
             insert_index -= 1
-        
+
         main._project.pages.insert(insert_index, moved_page)
 
         main._mark_as_dirty()
-        
-        current_selection_index = self.list_widget.currentRow()
         self.refresh()
-        if current_selection_index >= 0 and current_selection_index < self.list_widget.count():
-            self.list_widget.setCurrentRow(current_selection_index)
+
+        if current_page_id:
+            for i, p in enumerate(main._project.pages):
+                if p.page_id == current_page_id:
+                    self.list_widget.setCurrentRow(i)
+                    break
 
     def show_page_context_menu(self, pos):
         main = self.main_win

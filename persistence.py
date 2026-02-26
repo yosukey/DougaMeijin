@@ -272,7 +272,8 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
             
     return new_pages, error_messages
 
-def save_project_to_zip(work_dir: str, project: Project, zip_path: str):
+def save_project_to_zip(work_dir: str, project: Project, zip_path: str,
+                        progress_callback=None, is_canceled_callback=None):
     temp_zip_path = zip_path + ".tmp"
     work_dir_path = Path(work_dir)
 
@@ -302,22 +303,43 @@ def save_project_to_zip(work_dir: str, project: Project, zip_path: str):
     project_json_path = work_dir_path / PROJECT_FILENAME
     with project_json_path.open("w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
-    
+
     try:
         excluded_dirs = {DIR_WAVEFORMS}
 
+        all_files = []
+        for root, dirs, files in os.walk(work_dir_path):
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
+            root_path = Path(root)
+            for file in files:
+                all_files.append(root_path / file)
+
+        total_files = len(all_files)
+
         with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(work_dir_path):
-                dirs[:] = [d for d in dirs if d not in excluded_dirs]
-                
-                root_path = Path(root)
-                for file in files:
-                    file_path = root_path / file
-                    archive_name = file_path.relative_to(work_dir_path)
-                    zf.write(file_path, archive_name)
+            for i, file_path in enumerate(all_files):
+                if is_canceled_callback and is_canceled_callback():
+                    raise InterruptedError("Save canceled by user.")
+
+                archive_name = file_path.relative_to(work_dir_path)
+                zf.write(file_path, archive_name)
+
+                if progress_callback and total_files > 0:
+                    progress_callback(i + 1, total_files,
+                                      f"ファイルを保存中... ({i + 1}/{total_files})")
+
+        if is_canceled_callback and is_canceled_callback():
+            raise InterruptedError("Save canceled by user.")
 
         os.replace(temp_zip_path, zip_path)
 
+    except InterruptedError:
+        if Path(temp_zip_path).exists():
+            try:
+                Path(temp_zip_path).unlink()
+            except FileNotFoundError:
+                pass
+        raise
     except Exception as e:
         if Path(temp_zip_path).exists():
             try:

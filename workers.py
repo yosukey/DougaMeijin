@@ -225,10 +225,15 @@ class AudioImportWorker(QObject):
 
         except Exception as e:
             self.error.emit(self.page_id, str(e))
-            if self.audio_path.exists() and self.audio_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
-                try: 
-                    self.audio_path.unlink()
-                except OSError: 
+            if temp_wav_path.exists():
+                try:
+                    temp_wav_path.unlink()
+                except OSError:
+                    pass
+            if self.target_wav_path.exists() and self.target_wav_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
+                try:
+                    self.target_wav_path.unlink()
+                except OSError:
                     pass
 
 class ImageImportWorker(QObject):
@@ -290,20 +295,113 @@ class ExportWorker(QObject):
 
 class SaveProjectWorker(QObject):
     finished = Signal(bool, str)
+    update_progress = Signal(int, int, str)  # current, total, message
 
-    def __init__(self, work_dir: str, project: Project, save_path: str):
+    def __init__(self, work_dir: str, project: Project, save_path: str, skip_size_check: bool = False):
         super().__init__()
         self.work_dir = work_dir
         self.project = project
         self.save_path = save_path
+        self.skip_size_check = skip_size_check
+        self._is_canceled = False
+
+    def request_cancel(self):
+        self._is_canceled = True
 
     def process(self):
         try:
-            save_project_to_zip(self.work_dir, self.project, self.save_path)
-            self.finished.emit(True, self.save_path)
+            if not self.skip_size_check:
+                self.update_progress.emit(0, 0, "プロジェクトサイズを確認中...")
+                from utils import get_directory_uncompressed_size
+                from config import MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES
+                uncompressed_size = get_directory_uncompressed_size(Path(self.work_dir))
+
+                if self._is_canceled:
+                    self.finished.emit(False, "SAVE_CANCELED")
+                    return
+
+                if uncompressed_size > MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES:
+                    size_gb = uncompressed_size / (1024**3)
+                    self.finished.emit(False, f"SIZE_LIMIT:{size_gb:.2f}")
+                    return
+
+            self.update_progress.emit(0, 0, "プロジェクトを保存中...")
+
+            save_project_to_zip(
+                self.work_dir, self.project, self.save_path,
+                progress_callback=self._report_progress,
+                is_canceled_callback=lambda: self._is_canceled
+            )
+
+            if self._is_canceled:
+                self.finished.emit(False, "SAVE_CANCELED")
+            else:
+                self.finished.emit(True, self.save_path)
+        except InterruptedError:
+            self.finished.emit(False, "SAVE_CANCELED")
         except Exception as e:
             logger.error(f"SaveProjectWorker failed: {e}", exc_info=True)
             self.finished.emit(False, str(e))
+
+    def _report_progress(self, current: int, total: int, message: str):
+        self.update_progress.emit(current, total, message)
+
+
+class AssetExportWorker(QObject):
+    finished = Signal(int, list)  # exported_count, error_messages
+    update_progress = Signal(int, int, str)  # current, total, message
+
+    def __init__(self, pages_data: list, work_dir: str, dest_dir: str):
+        super().__init__()
+        self.pages_data = pages_data
+        self.work_dir = Path(work_dir)
+        self.dest_dir = Path(dest_dir)
+
+    def process(self):
+        exported_count = 0
+        error_messages = []
+        total_items = len(self.pages_data)
+
+        try:
+            for index, page_info in enumerate(self.pages_data):
+                page_number = page_info["page_number"]
+                image_rel = page_info.get("image")
+                audio_rel = page_info.get("audio")
+
+                if image_rel:
+                    source_path = self.work_dir / image_rel
+                    if source_path.exists():
+                        try:
+                            ext = source_path.suffix
+                            dest_path = self.dest_dir / f"ページ{page_number}{ext}"
+                            shutil.copy2(source_path, dest_path)
+                            exported_count += 1
+                        except (IOError, OSError) as e:
+                            err_msg = f"・ページ{page_number}の画像 ({source_path.name}) のコピーに失敗: {e}"
+                            logger.error(err_msg)
+                            error_messages.append(err_msg)
+
+                if audio_rel:
+                    source_path = self.work_dir / audio_rel
+                    if source_path.exists():
+                        try:
+                            dest_path = self.dest_dir / f"ページ{page_number}.wav"
+                            shutil.copy2(source_path, dest_path)
+                            exported_count += 1
+                        except (IOError, OSError) as e:
+                            err_msg = f"・ページ{page_number}の音声 ({source_path.name}) のコピーに失敗: {e}"
+                            logger.error(err_msg)
+                            error_messages.append(err_msg)
+
+                self.update_progress.emit(
+                    index + 1, total_items,
+                    f"素材をエクスポート中... ({index + 1}/{total_items})")
+
+            self.finished.emit(exported_count, error_messages)
+        except Exception as e:
+            logger.error(f"AssetExportWorker failed: {e}", exc_info=True)
+            error_messages.append(f"予期せぬエラー: {e}")
+            self.finished.emit(exported_count, error_messages)
 
 
 class UpdateChecker(QObject):

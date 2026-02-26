@@ -15,5 +15,8 @@ class QtLogHandler(QObject, logging.Handler):
         self.setFormatter(formatter)
 
     def emit(self, record: logging.LogRecord):
-        msg = self.format(record)
-        self.new_record.emit(msg)
+        try:
+            msg = self.format(record)
+            self.new_record.emit(msg)
+        except Exception:
+            self.handleError(record)
