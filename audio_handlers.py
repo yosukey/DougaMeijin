@@ -394,7 +394,12 @@ class RecorderHandler(QObject):
     def on_audio_device_changed(self, index):
         if not self._audio_devices or not (0 <= index < len(self._audio_devices)):
             return
-        
+
+        if self.is_recording():
+            self.main_win.statusBar().showMessage(
+                "録音中はデバイスを変更できません", STATUS_BAR_MSG_DURATION_MS)
+            return
+
         selected_device = self._audio_devices[index]
         self.recreate_recorder(selected_device)
         self.main_win.statusBar().showMessage(

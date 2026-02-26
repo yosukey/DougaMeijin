@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     Qt, QUrl, QSize, QStandardPaths, QThread, QEvent,
-    Slot, QTimer
+    QEventLoop, Slot, QTimer
 )
 from PySide6.QtGui import (
     QPixmap, QDesktopServices, QIcon, QAction
@@ -29,14 +29,13 @@ from persistence import (
 from utils import (
     natural_sort_key, load_waveform_data,
     save_waveform_cache, load_waveform_cache, remove_waveform_cache,
-    gracefully_shutdown_thread, compare_versions, prune_stale_caches,
-    get_directory_uncompressed_size
+    gracefully_shutdown_thread, compare_versions, prune_stale_caches
 )
 from config import *
 
 from main_window_ui import UiBuilder
 from list_delegate import RichTextDelegate
-from workers import UpdateChecker, FFmpegCheckWorker, SaveProjectWorker
+from workers import UpdateChecker, FFmpegCheckWorker, SaveProjectWorker, AssetExportWorker
 from audio_handlers import PlaybackHandler, RecorderHandler, AudioSessionManager
 from debug_console import DebugConsoleDialog
 from ffmpeg_downloader import FFmpegDownloaderDialog
@@ -76,6 +75,8 @@ class MainWindow(QMainWindow):
         self._current_state = "idle"
         self._playback_start_position_msec = 0
         self._ffmpeg_is_available = False
+        self._cached_preview_path: Optional[str] = None
+        self._cached_preview_pixmap: Optional[QPixmap] = None
         
         self._audio_init_retries = 0
 
@@ -600,56 +601,55 @@ class MainWindow(QMainWindow):
         if zip_path:
             self.open_project_from_path(zip_path)
 
-    def _perform_save(self, path: str) -> bool:
+    def _perform_save(self, path: str, skip_size_check: bool = False) -> bool:
         if not self._project or not self._work_dir:
             return False
-        
-        uncompressed_size = get_directory_uncompressed_size(self._work_dir)
-        if uncompressed_size > MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES:
-            size_gb = uncompressed_size / (1024**3)
-            limit_gb = MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES / (1024**3)
-            
-            reply = QMessageBox.warning(
-                self,
-                "プロジェクトサイズの警告",
-                f"このプロジェクトのサイズ ({size_gb:.2f} GB) は非常に大きく、"
-                f"推奨上限 ({limit_gb:.0f} GB) を超えています。\n"
-                "環境によっては、このプロジェクトファイルを再度開く際に問題が発生する可能性があります。\n\n"
-                "このまま保存を続行しますか？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                self.statusBar().showMessage("保存がキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
-                return False
-        
-        progress = QProgressDialog("プロジェクトを保存中...", None, 0, 0, self)
+
+        progress = QProgressDialog("プロジェクトサイズを確認中...", "キャンセル", 0, 0, self)
         progress.setWindowTitle("保存中")
         progress.setWindowModality(Qt.WindowModal)
-        progress.setCancelButton(None)
         progress.setMinimumDuration(0)
-        
+
         thread = QThread(self)
-        worker = SaveProjectWorker(str(self._work_dir), self._project, path)
+        worker = SaveProjectWorker(str(self._work_dir), self._project, path,
+                                   skip_size_check=skip_size_check)
         worker.moveToThread(thread)
-        
+
         result_holder = {"success": False, "message": ""}
+        loop = QEventLoop(self)
 
         def on_finished(success, message):
             result_holder["success"] = success
             result_holder["message"] = message
-            progress.accept()
+            loop.quit()
+
+        def on_progress(current, total, message):
+            if total > 0:
+                progress.setMaximum(total)
+                progress.setValue(current)
+            else:
+                progress.setMaximum(0)
+                progress.setValue(0)
+            progress.setLabelText(message)
+
+        def on_cancel():
+            worker.request_cancel()
+            progress.setLabelText("キャンセル処理中...")
+            progress.setCancelButton(None)
 
         worker.finished.connect(on_finished)
+        worker.update_progress.connect(on_progress)
         worker.finished.connect(thread.quit)
         thread.started.connect(worker.process)
         thread.finished.connect(thread.deleteLater)
         worker.finished.connect(worker.deleteLater)
+        progress.canceled.connect(on_cancel)
 
         logger.info(f"Starting background save to: {path}")
+        progress.show()
         thread.start()
-        
-        progress.exec()
+        loop.exec()
+        progress.close()
 
         if result_holder["success"]:
             self._project_zip_path = path
@@ -658,9 +658,33 @@ class MainWindow(QMainWindow):
             logger.info("Save successful.")
             return True
         else:
-            error_msg = result_holder["message"]
-            QMessageBox.critical(self, "保存エラー", f"プロジェクトの保存に失敗しました:\n{error_msg}")
-            logger.error(f"Project save failed: {error_msg}")
+            message = result_holder["message"]
+
+            if message.startswith("SIZE_LIMIT:"):
+                size_gb_str = message.split(":")[1]
+                limit_gb = MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES / (1024**3)
+                reply = QMessageBox.warning(
+                    self,
+                    "プロジェクトサイズの警告",
+                    f"このプロジェクトのサイズ ({size_gb_str} GB) は非常に大きく、"
+                    f"推奨上限 ({limit_gb:.0f} GB) を超えています。\n"
+                    "環境によっては、このプロジェクトファイルを再度開く際に問題が発生する可能性があります。\n\n"
+                    "このまま保存を続行しますか？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    return self._perform_save(path, skip_size_check=True)
+                else:
+                    self.statusBar().showMessage("保存がキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
+                    return False
+
+            if message == "SAVE_CANCELED":
+                self.statusBar().showMessage("保存がキャンセルされました", STATUS_BAR_MSG_DURATION_MS)
+                return False
+
+            QMessageBox.critical(self, "保存エラー", f"プロジェクトの保存に失敗しました:\n{message}")
+            logger.error(f"Project save failed: {message}")
             return False
 
     def _save_project(self) -> bool:
@@ -761,75 +785,74 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "フォルダ作成エラー", f"エクスポート用フォルダの作成に失敗しました:\n{dest_dir}\n\n詳細: {e}")
             return
         
+        pages_data = []
+        for index, page in enumerate(self._project.pages):
+            page_info = {"page_number": index + 1, "image": page.image}
+            if page.audio and page.duration and page.duration > MIN_AUDIO_DURATION_SEC:
+                page_info["audio"] = page.audio
+            pages_data.append(page_info)
+
         self._set_ui_state("processing")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        self.statusBar().showMessage("素材ファイルをエクスポート中...", 0)
 
-        exported_count = 0
-        error_messages = []
+        progress = QProgressDialog("素材をエクスポート中...", None, 0, len(pages_data), self)
+        progress.setWindowTitle("エクスポート中")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
 
-        try:
-            for index, page in enumerate(self._project.pages):
-                page_number = index + 1
-                
-                if page.image:
-                    source_image_path = self._work_dir / page.image
-                    if source_image_path.exists():
-                        try:
-                            ext = source_image_path.suffix
-                            dest_image_name = f"ページ{page_number}{ext}"
-                            dest_image_path = dest_dir / dest_image_name
-                            shutil.copy2(source_image_path, dest_image_path)
-                            exported_count += 1
-                        except (IOError, OSError) as e:
-                            err_msg = f"・ページ{page_number}の画像 ({source_image_path.name}) のコピーに失敗: {e}"
-                            logger.error(err_msg)
-                            error_messages.append(err_msg)
-                    else:
-                        logger.warning(f"Image file not found for page {page_number}: {source_image_path}")
+        thread = QThread(self)
+        worker = AssetExportWorker(pages_data, str(self._work_dir), str(dest_dir))
+        worker.moveToThread(thread)
 
-                if page.audio and page.duration and page.duration > MIN_AUDIO_DURATION_SEC:
-                    source_audio_path = self._work_dir / page.audio
-                    if source_audio_path.exists():
-                        try:
-                            dest_audio_name = f"ページ{page_number}.wav"
-                            dest_audio_path = dest_dir / dest_audio_name
-                            shutil.copy2(source_audio_path, dest_audio_path)
-                            exported_count += 1
-                        except (IOError, OSError) as e:
-                            err_msg = f"・ページ{page_number}の音声 ({source_audio_path.name}) のコピーに失敗: {e}"
-                            logger.error(err_msg)
-                            error_messages.append(err_msg)
-                    else:
-                         logger.warning(f"Audio file not found for page {page_number}: {source_audio_path}")
-            
-            if not error_messages:
-                QMessageBox.information(
-                    self,
-                    "エクスポート完了",
-                    f"{exported_count}個の素材ファイルのエクスポートが完了しました。\n"
-                    f"出力先: {dest_dir}"
-                )
-            else:
-                summary = (
-                    f"{exported_count}個のファイルは正常にエクスポートされましたが、"
-                    f"{len(error_messages)}件のエラーが発生しました。"
-                )
-                details = "\n".join(error_messages)
-                msg_box = QMessageBox(self)
-                msg_box.setIcon(QMessageBox.Warning)
-                msg_box.setWindowTitle("エクスポート完了（一部エラーあり）")
-                msg_box.setText(summary)
-                msg_box.setInformativeText(details)
-                msg_box.exec()
+        result_holder = {"exported_count": 0, "error_messages": []}
+        loop = QEventLoop(self)
 
-        except Exception as e:
-            QMessageBox.critical(self, "エクスポート失敗", f"予期せぬエラーが発生しました:\n{e}")
-            logger.critical("Failed to export assets", exc_info=True)
-        finally:
-            QApplication.restoreOverrideCursor()
-            self._set_ui_state("idle")
-            self.statusBar().showMessage("エクスポート完了", STATUS_BAR_SAVE_MSG_DURATION_MS)
+        def on_progress(current, total, message):
+            progress.setMaximum(total)
+            progress.setValue(current)
+            progress.setLabelText(message)
+
+        def on_finished(exported_count, error_messages):
+            result_holder["exported_count"] = exported_count
+            result_holder["error_messages"] = error_messages
+            loop.quit()
+
+        worker.update_progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.finished.connect(thread.quit)
+        thread.started.connect(worker.process)
+        thread.finished.connect(thread.deleteLater)
+        worker.finished.connect(worker.deleteLater)
+
+        progress.show()
+        thread.start()
+        loop.exec()
+        progress.close()
+
+        self._set_ui_state("idle")
+
+        exported_count = result_holder["exported_count"]
+        error_messages = result_holder["error_messages"]
+        if not error_messages:
+            QMessageBox.information(
+                self,
+                "エクスポート完了",
+                f"{exported_count}個の素材ファイルのエクスポートが完了しました。\n"
+                f"出力先: {dest_dir}"
+            )
+        else:
+            summary = (
+                f"{exported_count}個のファイルは正常にエクスポートされましたが、"
+                f"{len(error_messages)}件のエラーが発生しました。"
+            )
+            details = "\n".join(error_messages)
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("エクスポート完了（一部エラーあり）")
+            msg_box.setText(summary)
+            msg_box.setInformativeText(details)
+            msg_box.exec()
+
+        self.statusBar().showMessage("エクスポート完了", STATUS_BAR_SAVE_MSG_DURATION_MS)
 
     def _open_homepage(self):
         logger.info(f"Opening homepage: {HOMEPAGE_URL}")
@@ -908,12 +931,16 @@ class MainWindow(QMainWindow):
             self.label_image.setText(f"(画像が見つかりません)\n{img_abs}")
             return
         
-        preview_pixmap = QPixmap(str(img_abs))
-        if preview_pixmap.isNull():
+        img_abs_str = str(img_abs)
+        if self._cached_preview_path != img_abs_str:
+            self._cached_preview_pixmap = QPixmap(img_abs_str)
+            self._cached_preview_path = img_abs_str
+
+        if self._cached_preview_pixmap.isNull():
             self.label_image.setText(f"(画像の読み込み失敗)\n{img_abs}")
             return
 
-        scaled_pixmap = preview_pixmap.scaled(
+        scaled_pixmap = self._cached_preview_pixmap.scaled(
             self.label_image.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation

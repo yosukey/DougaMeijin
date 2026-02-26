@@ -23,6 +23,7 @@ class DebugConsoleDialog(QDialog):
         
         self.text_browser = QPlainTextEdit(self)
         self.text_browser.setReadOnly(True)
+        self.text_browser.setMaximumBlockCount(5000)
         layout.addWidget(self.text_browser)
 
         button_box = QDialogButtonBox()
