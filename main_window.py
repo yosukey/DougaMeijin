@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     Qt, QUrl, QSize, QStandardPaths, QThread, QEvent,
-    QEventLoop, Slot, QTimer
+    QEventLoop, Slot, QTimer, QObject
 )
 from PySide6.QtGui import (
     QPixmap, QDesktopServices, QIcon, QAction
@@ -43,6 +43,46 @@ from worker_handler import WorkerHandler
 from page_list_manager import PageListManager
 
 logger = logging.getLogger(__name__)
+
+
+class _SyncWorkerReceiver(QObject):
+    """Receives worker signals in the main (GUI) thread via @Slot.
+
+    PySide6 may invoke plain Python closures via DirectConnection even across
+    threads, which causes cross-thread QWidget access and crashes.
+    As a proper QObject living in the main thread, Qt's AutoConnection
+    correctly uses QueuedConnection when the signal is emitted from a
+    worker thread.
+    """
+
+    def __init__(self, progress, result_holder, loop, parent=None):
+        super().__init__(parent)
+        self._progress = progress
+        self._result = result_holder
+        self._loop = loop
+
+    @Slot(int, int, str)
+    def on_progress(self, current, total, message):
+        if total > 0:
+            self._progress.setMaximum(total)
+            self._progress.setValue(current)
+        else:
+            self._progress.setMaximum(0)
+            self._progress.setValue(0)
+        self._progress.setLabelText(message)
+
+    @Slot(bool, str)
+    def on_save_finished(self, success, message):
+        self._result["success"] = success
+        self._result["message"] = message
+        self._loop.quit()
+
+    @Slot(int, object)
+    def on_export_finished(self, count, errors):
+        self._result["exported_count"] = count
+        self._result["error_messages"] = errors
+        self._loop.quit()
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -619,29 +659,18 @@ class MainWindow(QMainWindow):
 
         result_holder = {"success": False, "message": ""}
         loop = QEventLoop(self)
-
-        def on_finished(success, message):
-            result_holder["success"] = success
-            result_holder["message"] = message
-            loop.quit()
-
-        def on_progress(current, total, message):
-            if total > 0:
-                progress.setMaximum(total)
-                progress.setValue(current)
-            else:
-                progress.setMaximum(0)
-                progress.setValue(0)
-            progress.setLabelText(message)
+        receiver = _SyncWorkerReceiver(progress, result_holder, loop, parent=self)
 
         def on_cancel():
             worker.request_cancel()
             progress.setLabelText("キャンセル処理中...")
             progress.setCancelButton(None)
 
-        worker.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-        worker.update_progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(receiver.on_save_finished)
+        worker.update_progress.connect(receiver.on_progress)
         thread.started.connect(worker.process)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         progress.canceled.connect(on_cancel)
 
         logger.info(f"Starting background save to: {path}")
@@ -651,9 +680,7 @@ class MainWindow(QMainWindow):
         progress.close()
         thread.quit()
         thread.wait(5000)
-        worker.moveToThread(self.thread())
-        worker.deleteLater()
-        thread.deleteLater()
+        receiver.deleteLater()
 
         if result_holder["success"]:
             self._project_zip_path = path
@@ -811,20 +838,13 @@ class MainWindow(QMainWindow):
 
         result_holder = {"exported_count": 0, "error_messages": []}
         loop = QEventLoop(self)
+        receiver = _SyncWorkerReceiver(progress, result_holder, loop, parent=self)
 
-        def on_progress(current, total, message):
-            progress.setMaximum(total)
-            progress.setValue(current)
-            progress.setLabelText(message)
-
-        def on_finished(exported_count, error_messages):
-            result_holder["exported_count"] = exported_count
-            result_holder["error_messages"] = error_messages
-            loop.quit()
-
-        worker.update_progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
-        worker.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
+        worker.update_progress.connect(receiver.on_progress)
+        worker.finished.connect(receiver.on_export_finished)
         thread.started.connect(worker.process)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
         progress.show()
         thread.start()
@@ -832,9 +852,7 @@ class MainWindow(QMainWindow):
         progress.close()
         thread.quit()
         thread.wait(5000)
-        worker.moveToThread(self.thread())
-        worker.deleteLater()
-        thread.deleteLater()
+        receiver.deleteLater()
 
         self._set_ui_state("idle")
 
