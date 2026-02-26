@@ -609,6 +609,8 @@ class MainWindow(QMainWindow):
         progress.setWindowTitle("保存中")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
 
         thread = QThread(self)
         worker = SaveProjectWorker(str(self._work_dir), self._project, path,
@@ -639,10 +641,7 @@ class MainWindow(QMainWindow):
 
         worker.finished.connect(on_finished)
         worker.update_progress.connect(on_progress)
-        worker.finished.connect(thread.quit)
         thread.started.connect(worker.process)
-        thread.finished.connect(thread.deleteLater)
-        worker.finished.connect(worker.deleteLater)
         progress.canceled.connect(on_cancel)
 
         logger.info(f"Starting background save to: {path}")
@@ -650,6 +649,9 @@ class MainWindow(QMainWindow):
         thread.start()
         loop.exec()
         progress.close()
+        thread.quit()
+        thread.wait(5000)
+        thread.deleteLater()
 
         if result_holder["success"]:
             self._project_zip_path = path
@@ -798,6 +800,8 @@ class MainWindow(QMainWindow):
         progress.setWindowTitle("エクスポート中")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
 
         thread = QThread(self)
         worker = AssetExportWorker(pages_data, str(self._work_dir), str(dest_dir))
@@ -818,15 +822,15 @@ class MainWindow(QMainWindow):
 
         worker.update_progress.connect(on_progress)
         worker.finished.connect(on_finished)
-        worker.finished.connect(thread.quit)
         thread.started.connect(worker.process)
-        thread.finished.connect(thread.deleteLater)
-        worker.finished.connect(worker.deleteLater)
 
         progress.show()
         thread.start()
         loop.exec()
         progress.close()
+        thread.quit()
+        thread.wait(5000)
+        thread.deleteLater()
 
         self._set_ui_state("idle")
 
