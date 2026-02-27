@@ -386,7 +386,7 @@ def get_system_info_header() -> str:
     ]
     
     # 4. Define key packages (add psutil to the list)
-    key_modules = ["PySide6", "numpy", "Pillow", "PyMuPDF", "psutil"]
+    key_modules = ["PySide6", "numpy", "Pillow", "pypdfium2", "psutil"]
     
     if getattr(sys, 'frozen', False):
         header_lines.append("  (Frozen executable detected. Versions are not available at runtime.)")

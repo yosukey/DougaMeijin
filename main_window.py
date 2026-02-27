@@ -925,7 +925,7 @@ class MainWindow(QMainWindow):
             <h3>主なPythonライブラリ:</h3>
             <ul>
                 <li><b>NumPy:</b> <a href="https://numpy.org/">numpy.org</a></li>
-                <li><b>PyMuPDF (fitz):</b> <a href="https://pymupdf.readthedocs.io/">pymupdf.readthedocs.io</a></li>
+                <li><b>pypdfium2:</b> <a href="https://pypdfium2-team.github.io/pypdfium2/">pypdfium2-team.github.io/pypdfium2</a> (Apache 2.0 / BSD-3-Clause)</li>
             </ul>
             <hr>
             <p>

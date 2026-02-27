@@ -20,7 +20,7 @@ from config import (
     PDF_RENDER_DPI, DIR_IMAGES, DIR_THUMBNAILS, PROJECT_FILENAME,
     MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES, DIR_WAVEFORMS
 )
-import fitz
+import pypdfium2 as pdfium
 from config import DEFAULT_RESOLUTION, DEFAULT_FPS
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -121,24 +121,26 @@ def _process_pdf_file(
     
     new_pages = []
     
-    with fitz.open(src_path) as doc:
-        num_pdf_pages = len(doc)
-        
+    with pdfium.PdfDocument(src_path) as pdf:
+        num_pdf_pages = len(pdf)
+
         if num_pdf_pages > MAX_PDF_PAGE_COUNT:
             message = f"・{original_filename}: PDFのページ数が多すぎるためスキップされました ({num_pdf_pages} > {MAX_PDF_PAGE_COUNT})。"
             error_messages.append(message)
             return []
 
+        render_scale = PDF_RENDER_DPI / 72
+
         for page_num in range(num_pdf_pages):
             if progress_callback:
                 progress_callback(f"{progress_prefix} PDFページ処理中: {original_filename} ({page_num + 1}/{num_pdf_pages})")
-            
-            page = doc.load_page(page_num)
-            
-            pix = page.get_pixmap(dpi=PDF_RENDER_DPI)
-            
-            if pix.width * pix.height > MAX_IMAGE_PIXELS:
-                px_mp = pix.width * pix.height / 1_000_000
+
+            page = pdf[page_num]
+
+            bitmap = page.render(scale=render_scale)
+
+            if bitmap.width * bitmap.height > MAX_IMAGE_PIXELS:
+                px_mp = bitmap.width * bitmap.height / 1_000_000
                 max_px_mp = MAX_IMAGE_PIXELS / 1_000_000
                 message = (
                     f"・{original_filename} (ページ {page_num + 1}): "
@@ -147,27 +149,23 @@ def _process_pdf_file(
                 error_messages.append(message)
                 continue
 
-            mode = "RGB"
-            if pix.alpha:
-                mode = "RGBA"
-            
-            source_img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
-            
-            if mode == "RGBA":
+            source_img = bitmap.to_pil()
+
+            if source_img.mode != "RGB":
                 source_img = source_img.convert("RGB")
 
             base_filename = f"{src_path.stem}_page_{page_num + 1:03d}{MASTER_IMAGE_EXTENSION}"
             assets = _create_and_save_assets(source_img, base_filename, images_dir, thumbnails_dir)
-            
+
             image_rel_path = assets["image_path"].relative_to(work_dir_path)
             new_page = Page(
                 image=image_rel_path.as_posix(),
                 original_filename=original_filename,
                 pdf_page_number=page_num + 1,
-                original_resolution=f"{pix.width}x{pix.height}"
+                original_resolution=f"{bitmap.width}x{bitmap.height}"
             )
             new_pages.append(new_page)
-            
+
     return new_pages
 
 def _process_image_file(
@@ -257,10 +255,10 @@ def process_new_images(work_dir: str, source_paths: List[str], progress_callback
             if progress_callback:
                 progress_callback(f"エラー: {error_msg}")
             continue
-        except fitz.errors.FitzError as e:
+        except pdfium.PdfiumError as e:
             error_msg = f"・{original_filename}: PDFファイルの処理に失敗しました。ファイルが破損しているか、非対応の形式である可能性があります。"
             error_messages.append(error_msg)
-            logger.error(f"Fitz (PyMuPDF) error processing {original_filename}: {e}")
+            logger.error(f"PDFium error processing {original_filename}: {e}")
             if progress_callback:
                 progress_callback(f"エラー: {error_msg}")
             continue

@@ -137,7 +137,7 @@ A. はい、多くの場合で利用できます。ただし、一部機能に�
 - Python  
 - PySide6 (Qt for Python)  
 - FFmpeg （外部プログラムとして連携して利用）
-- NumPy, PyMuPDF ほか  
+- NumPy, pypdfium2 ほか  
 
 ---
 
