@@ -100,33 +100,42 @@ class PageListManager:
         reply = QMessageBox.question(main, "ページの削除", f"{len(selected_items)}個のページを削除しますか？\nこの操作は元に戻せません。", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No: return
         pages_to_delete = [main._project.pages[self.list_widget.row(item)] for item in selected_items]
-        indices_to_delete = sorted([self.list_widget.row(item) for item in selected_items], reverse=True)
-        
-        logger.info(f"Removing {len(indices_to_delete)} pages at indices: {indices_to_delete}")
+        deleted_ids = {p.page_id for p in pages_to_delete}
+
+        logger.info(f"Removing {len(pages_to_delete)} pages: {sorted(deleted_ids)}")
         remove_pages_from_project(str(main._work_dir), main._project.pages, pages_to_delete)
-        
-        for idx in indices_to_delete:
-            del main._project.pages[idx]
+
+        main._project.pages = [p for p in main._project.pages if p.page_id not in deleted_ids]
         main._mark_as_dirty()
         self.refresh()
 
-    def on_pages_reordered(self, parent, start, end, destination, row):
+    def sync_order_from_view(self):
         main = self.main_win
-        if not main._project: return
+        if not main._project:
+            return
+
+        id_to_page = {p.page_id: p for p in main._project.pages}
+
+        new_order = []
+        for i in range(self.list_widget.count()):
+            page_id = self.list_widget.item(i).data(Qt.UserRole + 3)
+            page = id_to_page.pop(page_id, None)
+            if page is not None:
+                new_order.append(page)
+
+        # Safety: keep any pages not represented in the view (should not happen).
+        new_order.extend(id_to_page.values())
+
+        if [p.page_id for p in new_order] == [p.page_id for p in main._project.pages]:
+            return
 
         current_page_id = None
         current_row = self.list_widget.currentRow()
         if 0 <= current_row < len(main._project.pages):
             current_page_id = main._project.pages[current_row].page_id
 
-        logger.info(f"Reordering pages: Moving item from index {start} to {row}")
-        moved_page = main._project.pages.pop(start)
-
-        insert_index = row
-        if row > start:
-            insert_index -= 1
-
-        main._project.pages.insert(insert_index, moved_page)
+        logger.info("Pages reordered via drag-and-drop; syncing model from view order.")
+        main._project.pages = new_order
 
         main._mark_as_dirty()
         self.refresh()
@@ -238,6 +247,7 @@ class PageListManager:
         
         item.setData(Qt.UserRole + 1, page.locked)
         item.setData(Qt.UserRole + 2, has_audio)
+        item.setData(Qt.UserRole + 3, page.page_id)
 
     def update_total_duration(self):
         main = self.main_win
@@ -296,5 +306,6 @@ class PageListManager:
         item.setData(Qt.UserRole, index) 
         item.setData(Qt.UserRole + 1, page.locked)
         item.setData(Qt.UserRole + 2, has_audio)
+        item.setData(Qt.UserRole + 3, page.page_id)
         
         return item
