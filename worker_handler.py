@@ -233,8 +233,8 @@ class WorkerHandler(QObject):
             QMessageBox.warning(self.main_win, "処理中", "現在別のアクティブな音声処理セッションがあります。完了するまでお待ちください。")
             return
 
-        target_wav_path = session_manager.start_session(page)
-        if not target_wav_path:
+        target_path = session_manager.start_session(page)
+        if not target_path:
             self.main_win.statusBar().showMessage("音声セッションの開始に失敗しました", STATUS_BAR_MSG_DURATION_MS)
             return
 
@@ -253,7 +253,7 @@ class WorkerHandler(QObject):
         worker_instance = AudioImportWorker(
             work_dir=str(self.main_win._work_dir),
             source_path=source_path,
-            target_wav_path=target_wav_path,
+            target_path=target_path,
             widget_width=self.main_win.waveform_widget.width(),
             page_id=page_id
         )
@@ -263,7 +263,7 @@ class WorkerHandler(QObject):
             on_error=self._on_audio_import_error
         )
 
-    def start_audio_processing(self, audio_path: str, row: int):
+    def start_audio_processing(self, input_path: str, output_path: str, row: int):
         if self.audio_thread and self.audio_thread.isRunning():
             logger.warning("Audio processing requested but previous thread is still running. Ignoring.")
             return
@@ -275,11 +275,12 @@ class WorkerHandler(QObject):
         
         self.main_win._set_ui_state("processing")
         self.main_win.statusBar().showMessage("音声ファイルを処理中...", 0)
-        logger.info(f"Starting audio processing worker for recorded file: {audio_path}")
+        logger.info(f"Starting audio processing worker. input={input_path} output={output_path}")
 
         worker_instance = AudioProcessingWorker(
             work_dir=str(self.main_win._work_dir),
-            audio_path=audio_path,
+            input_path=input_path,
+            output_path=output_path,
             widget_width=self.main_win.waveform_widget.width(),
             page_id=page_id
         )
