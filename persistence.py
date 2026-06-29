@@ -346,11 +346,15 @@ def save_project_to_zip(work_dir: str, project: Project, zip_path: str,
                 pass
         raise e
 
-def _migrate_audio_to_flac(work_dir_path: Path, pages: List[Page]) -> None:
+def _migrate_audio_to_flac(work_dir_path: Path, pages: List[Page]) -> bool:
     # Backward compatibility: losslessly convert any legacy WAV page audio to FLAC.
     # Runs at load time. If FFmpeg is unavailable or a conversion fails, the WAV is
     # left in place (readers tolerate both formats), so loading never breaks; the
     # file will be retried on a subsequent load.
+    # Returns True if at least one page was migrated, so the caller can mark the
+    # project dirty and let the user persist the migration (otherwise the .dmj keeps
+    # its WAV references and re-migrates on every load).
+    migrated = False
     for page in pages:
         if not page.audio or not page.audio.lower().endswith(".wav"):
             continue
@@ -361,6 +365,7 @@ def _migrate_audio_to_flac(work_dir_path: Path, pages: List[Page]) -> None:
         try:
             if convert_to_flac(str(src), str(dst)):
                 page.audio = dst.relative_to(work_dir_path).as_posix()
+                migrated = True
                 try:
                     src.unlink()
                 except OSError as e:
@@ -374,6 +379,7 @@ def _migrate_audio_to_flac(work_dir_path: Path, pages: List[Page]) -> None:
                         pass
         except Exception as e:
             logger.warning(f"FLAC migration error for {src}: {e}; keeping WAV.")
+    return migrated
 
 def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = False) -> Project:
     work_dir_path = Path(work_dir)
@@ -431,7 +437,7 @@ def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = 
     pages = [Page(**p) for p in d.get("pages", [])]
 
     # Backward compatibility: losslessly migrate any legacy WAV audio to FLAC.
-    _migrate_audio_to_flac(work_dir_path, pages)
+    migrated = _migrate_audio_to_flac(work_dir_path, pages)
 
     for page in pages:
         if page.audio and page.duration is None:
@@ -450,6 +456,9 @@ def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = 
         pages=pages,
     )
     proj.ensure_bounds()
+    # Transient flag: if any legacy WAV was migrated to FLAC, the in-memory model now
+    # differs from the saved .dmj, so the caller should mark the project dirty.
+    proj.migrated_on_load = migrated
     return proj
 
 def remove_pages_from_project(work_dir: str, all_pages: List[Page], pages_to_delete: List[Page]):
