@@ -11,6 +11,19 @@ from PySide6.QtWidgets import (
 from config import *
 from waveform import WaveformWidget
 
+
+class PageListWidget(QListWidget):
+    # QListWidget's InternalMove reorder mutates the view but does not reliably
+    # surface a single signal we can use to resync the data model. Emit our own
+    # signal after the drop has been fully applied so the order can be rebuilt
+    # from the visual item order.
+    rowsReordered = Signal()
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.rowsReordered.emit()
+
+
 STYLESHEET = """
 QWidget {
     background-color: #f0f0f0;
@@ -221,7 +234,7 @@ class UiBuilder:
         layout.setContentsMargins(8, 8, 8, 8)
         
         # --- ページ一覧 ---
-        main_win.list_pages = QListWidget()
+        main_win.list_pages = PageListWidget()
         main_win.list_pages.setViewMode(QListWidget.ListMode)
         main_win.list_pages.setFlow(QListWidget.TopToBottom)
         main_win.list_pages.setMovement(QListWidget.Static)
