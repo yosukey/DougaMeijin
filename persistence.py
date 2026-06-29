@@ -11,14 +11,14 @@ import io
 from pathlib import Path
 
 from models import Project, Page
-from utils import audio_duration_seconds, get_image_metadata, remove_waveform_cache
+from utils import audio_duration_seconds, convert_to_flac, get_image_metadata, remove_waveform_cache
 from config import (
     THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, RESOLUTION_MAP,
     MAX_IMAGE_FILE_SIZE_MB, MAX_PDF_FILE_SIZE_MB, MAX_PDF_PAGE_COUNT,
     MAX_IMAGE_PIXELS,
     COLLISION_RETRY_LIMIT, MASTER_IMAGE_FORMAT_NAME, MASTER_IMAGE_EXTENSION,
     PDF_RENDER_DPI, DIR_IMAGES, DIR_THUMBNAILS, PROJECT_FILENAME,
-    MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES, DIR_WAVEFORMS
+    MAX_UNCOMPRESSED_PROJECT_SIZE_BYTES, DIR_WAVEFORMS, AUDIO_FILE_EXTENSION
 )
 import pypdfium2 as pdfium
 from config import DEFAULT_RESOLUTION, DEFAULT_FPS
@@ -346,6 +346,35 @@ def save_project_to_zip(work_dir: str, project: Project, zip_path: str,
                 pass
         raise e
 
+def _migrate_audio_to_flac(work_dir_path: Path, pages: List[Page]) -> None:
+    # Backward compatibility: losslessly convert any legacy WAV page audio to FLAC.
+    # Runs at load time. If FFmpeg is unavailable or a conversion fails, the WAV is
+    # left in place (readers tolerate both formats), so loading never breaks; the
+    # file will be retried on a subsequent load.
+    for page in pages:
+        if not page.audio or not page.audio.lower().endswith(".wav"):
+            continue
+        src = work_dir_path / page.audio
+        if not src.exists():
+            continue
+        dst = src.with_suffix(AUDIO_FILE_EXTENSION)
+        try:
+            if convert_to_flac(str(src), str(dst)):
+                page.audio = dst.relative_to(work_dir_path).as_posix()
+                try:
+                    src.unlink()
+                except OSError as e:
+                    logger.warning(f"Converted to FLAC but could not remove old WAV {src}: {e}")
+            else:
+                logger.warning(f"FLAC migration failed for {src}; keeping WAV.")
+                if dst.exists():
+                    try:
+                        dst.unlink()
+                    except OSError:
+                        pass
+        except Exception as e:
+            logger.warning(f"FLAC migration error for {src}: {e}; keeping WAV.")
+
 def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = False) -> Project:
     work_dir_path = Path(work_dir)
     if work_dir_path.exists():
@@ -400,6 +429,10 @@ def load_project_from_zip(zip_path: str, work_dir: str, skip_size_check: bool = 
         d = json.load(f)
     
     pages = [Page(**p) for p in d.get("pages", [])]
+
+    # Backward compatibility: losslessly migrate any legacy WAV audio to FLAC.
+    _migrate_audio_to_flac(work_dir_path, pages)
+
     for page in pages:
         if page.audio and page.duration is None:
             try:

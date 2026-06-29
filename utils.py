@@ -2,18 +2,18 @@
 import os
 import re
 import sys
-import wave
 import subprocess
 import logging
 from typing import Optional, Tuple
 import shutil
 import numpy as np
+import soundfile as sf
 from PySide6.QtCore import QThread, QStandardPaths
 from PIL import Image
 from pathlib import Path
 from typing import Optional
 from config import (
-    AUDIO_CHANNELS, FFMPEG_INSTALL_DIR, FFMPEG_BIN_DIR,
+    AUDIO_CHANNELS, AUDIO_CODEC, FFMPEG_INSTALL_DIR, FFMPEG_BIN_DIR,
     FFMPEG_EXE, FFPROBE_EXE, FFMPEG_AUDIO_FILTER,
     APP_NAME, APP_VERSION, DIR_WAVEFORMS
 )
@@ -41,11 +41,10 @@ def natural_sort_key(s: str):
 
 def audio_duration_seconds(path: str) -> float:
     try:
-        with wave.open(path, "rb") as w:
-            frames = w.getnframes()
-            rate = w.getframerate()
-            if rate == 0: return 0.0
-            return frames / float(rate)
+        info = sf.info(path)
+        if info.samplerate == 0:
+            return 0.0
+        return info.frames / float(info.samplerate)
     except Exception:
         return 0.0
 
@@ -160,7 +159,7 @@ def resample_audio(input_path: str, output_path: str, target_rate: int) -> bool:
         '-ac', str(AUDIO_CHANNELS),
         '-af', normalization_filter,
         '-sample_fmt', 's16',
-        '-f', 'wav',
+        '-c:a', AUDIO_CODEC,
         output_path
     ]
     try:
@@ -186,57 +185,74 @@ def resample_audio(input_path: str, output_path: str, target_rate: int) -> bool:
         logger.error(f"FFmpeg not found at {ffmpeg}. Audio processing failed.")
         return False
 
+def convert_to_flac(input_path: str, output_path: str) -> bool:
+    # Losslessly re-encode an already-processed (16kHz / mono / normalized) WAV to
+    # FLAC. No resampling or normalization is applied, so samples are preserved
+    # bit-for-bit. Used for backward-compatible migration of legacy projects.
+    ffmpeg = ffmpeg_executable_path()
+    command = [
+        ffmpeg,
+        '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-i', input_path,
+        '-sample_fmt', 's16',
+        '-c:a', AUDIO_CODEC,
+        output_path
+    ]
+    try:
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            startupinfo=startupinfo
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        logger.error(f"FLAC conversion failed for {input_path}: {e}")
+        return False
+
 def load_waveform_data(path: str, target_points: int) -> Optional[np.ndarray]:
     if target_points <= 0:
         return None
     try:
-        with wave.open(path, "rb") as w:
-            n_channels = w.getnchannels()
-            sample_width = w.getsampwidth()
-            n_frames = w.getnframes()
-            if n_frames == 0:
-                return None
-            frames_data = w.readframes(n_frames)
-
-        if sample_width == 1:
-            waveform = np.frombuffer(frames_data, dtype=np.uint8)
-            waveform = waveform.astype(np.float32) - 128.0
-            max_possible_amplitude = 128.0
-        else:
-            dtype_map = {2: np.int16, 4: np.int32}
-            if sample_width not in dtype_map:
-                return None
-            
-            dtype = dtype_map[sample_width]
-            waveform = np.frombuffer(frames_data, dtype=dtype)
-            waveform = waveform.astype(np.float32)
-            max_possible_amplitude = float(np.iinfo(dtype).max)
-
-        if n_channels > 1:
-            waveform = waveform.reshape(-1, n_channels).mean(axis=1)
-
-        if max_possible_amplitude > 0:
-            waveform /= max_possible_amplitude
-
-        if len(waveform) > target_points:
-            chunk_size = len(waveform) // target_points
-            num_chunks = target_points
-            
-            drawable_len = num_chunks * chunk_size
-            waveform = waveform[:drawable_len]
-            
-            waveform = waveform.reshape(num_chunks, chunk_size)
-            max_vals = waveform.max(axis=1)
-            min_vals = waveform.min(axis=1)
-            
-            downsampled = np.empty(num_chunks * 2, dtype=np.float32)
-            downsampled[0::2] = min_vals
-            downsampled[1::2] = max_vals
-            waveform = downsampled
-        
-        return waveform
+        # soundfile reads both WAV and FLAC; samples are returned already
+        # normalized to the [-1.0, 1.0] range as float32.
+        data, _ = sf.read(path, dtype="float32", always_2d=False)
     except Exception:
         return None
+
+    if data is None or len(data) == 0:
+        return None
+
+    # Downmix to mono if the source happens to be multi-channel.
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    waveform = data
+
+    if len(waveform) > target_points:
+        chunk_size = len(waveform) // target_points
+        num_chunks = target_points
+
+        drawable_len = num_chunks * chunk_size
+        waveform = waveform[:drawable_len]
+
+        waveform = waveform.reshape(num_chunks, chunk_size)
+        max_vals = waveform.max(axis=1)
+        min_vals = waveform.min(axis=1)
+
+        downsampled = np.empty(num_chunks * 2, dtype=np.float32)
+        downsampled[0::2] = min_vals
+        downsampled[1::2] = max_vals
+        waveform = downsampled
+
+    return np.ascontiguousarray(waveform, dtype=np.float32)
 
 def get_waveform_cache_path(work_dir: Path, page_id: str) -> Path:
     cache_dir = work_dir / DIR_WAVEFORMS
