@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
         self.btn_stop_playback.clicked.connect(self.playback_handler.stop_playback)
 
         # List/Widget Signals
-        self.list_pages.model().rowsMoved.connect(self.page_list_manager.on_pages_reordered)
+        self.list_pages.rowsReordered.connect(self.page_list_manager.sync_order_from_view)
         self.list_pages.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_pages.currentRowChanged.connect(self._on_select_page)
         self.list_pages.customContextMenuRequested.connect(self.page_list_manager.show_page_context_menu)
@@ -451,6 +451,9 @@ class MainWindow(QMainWindow):
         prune_stale_caches(self._work_dir, self._project)
         
         self._mark_as_dirty(False)
+        if getattr(new_project, "migrated_on_load", False):
+            logger.info("Legacy WAV audio was migrated to FLAC; marking project dirty so the user can persist it.")
+            self._mark_as_dirty(True)
         self.page_list_manager.refresh()
         logger.info(f"Project opened successfully: {path}")
 
