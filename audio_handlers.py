@@ -19,7 +19,8 @@ from recorder import AudioRecorder
 from config import (
     STATUS_BAR_MSG_DURATION_MS,
     MIN_RECORDING_DURATION_SEC, NO_PLAYBACK_POSITION,
-    MIN_AUDIO_DURATION_SEC, DIR_AUDIO
+    MIN_AUDIO_DURATION_SEC, DIR_AUDIO,
+    AUDIO_FILE_EXTENSION, RECORDING_TEMP_SUFFIX
 )
 from main_window_ui import (
     LEVEL_BAR_STYLE_RED, LEVEL_BAR_STYLE_YELLOW, LEVEL_BAR_STYLE_GREEN,
@@ -42,10 +43,13 @@ class AudioSessionManager:
             logger.error("Another session is already active.")
             return None
 
-        target_audio_filename = f"{page.page_id}.wav"
+        target_audio_filename = f"{page.page_id}{AUDIO_FILE_EXTENSION}"
         audio_dir = self._work_dir / DIR_AUDIO
         audio_dir.mkdir(parents=True, exist_ok=True)
         target_abs_path = audio_dir / target_audio_filename
+        recording_temp_path = target_abs_path.with_name(
+            target_abs_path.name + RECORDING_TEMP_SUFFIX
+        )
 
         self._backup_info = {
             "page_id": page.page_id,
@@ -53,6 +57,7 @@ class AudioSessionManager:
             "original_duration": page.duration,
             "original_source_info": page.audio_source_info,
             "target_abs_path": target_abs_path,
+            "recording_temp_path": recording_temp_path,
             "backup_abs_path": None
         }
 
@@ -95,6 +100,14 @@ class AudioSessionManager:
         logger.info("Aborting audio session, attempting to restore from backup.")
         backup_path: Optional[Path] = self._backup_info.get("backup_abs_path")
         target_path: Optional[Path] = self._backup_info.get("target_abs_path")
+        recording_temp_path: Optional[Path] = self._backup_info.get("recording_temp_path")
+
+        # Remove any leftover transient recording file (e.g. a too-short take).
+        if recording_temp_path and recording_temp_path.exists():
+            try:
+                recording_temp_path.unlink()
+            except OSError as e:
+                logger.warning(f"Failed to remove recording temp during abort: {e}")
 
         if backup_path and backup_path.exists():
             try:
@@ -126,6 +139,11 @@ class AudioSessionManager:
     def get_target_abs_path(self) -> Optional[str]:
         target_path = self._backup_info.get("target_abs_path")
         return str(target_path) if self._is_active and target_path else None
+
+    def get_recording_temp_path(self) -> Optional[Path]:
+        if not self._is_active:
+            return None
+        return self._backup_info.get("recording_temp_path")
 
     def _reset(self):
         self._is_active = False
@@ -534,7 +552,14 @@ class RecorderHandler(QObject):
         main.page_list_manager.update_list_item_text(row)
         main.page_list_manager.update_total_duration()
 
-        self._recorder.start(target_abs_path)
+        recording_temp = self.session_manager.get_recording_temp_path()
+        if not recording_temp:
+            QMessageBox.critical(main, "エラー", "録音用一時ファイルのパス取得に失敗しました。")
+            self.session_manager.abort_session()
+            main._set_ui_state("idle")
+            return
+
+        self._recorder.start(str(recording_temp))
 
     def _stop_record(self):
         main = self.main_win
@@ -546,6 +571,7 @@ class RecorderHandler(QObject):
         self._recorder.stop()
         self._reset_recording_ui()
         
+        recorded_temp = self.session_manager.get_recording_temp_path()
         target_file = self.session_manager.get_target_abs_path()
         row = main.list_pages.currentRow()
 
@@ -570,8 +596,10 @@ class RecorderHandler(QObject):
             main._set_ui_state("idle")
         
         else:
-            if row >= 0 and target_file:
-                main.worker_handler.start_audio_processing(target_file, row)
+            if row >= 0 and target_file and recorded_temp:
+                main.worker_handler.start_audio_processing(
+                    str(recorded_temp), str(target_file), row
+                )
 
     def _reset_recording_ui(self):
         main = self.main_win

@@ -61,6 +61,14 @@ COLLISION_RETRY_LIMIT = 200
 FFMPEG_AUDIO_FILTER = "dynaudnorm=f=150:g=15:p=0.9"
 RECORDER_PREFERRED_RATES = [24000, 48000, 44100, 16000]
 
+# --- Audio Persistence Format ---
+# Persisted (in-project) audio is stored as lossless FLAC.
+# Readers tolerate legacy WAV; loading migrates WAV -> FLAC.
+AUDIO_FILE_EXTENSION = ".flac"
+AUDIO_CODEC = "flac"
+# The recorder writes a transient WAV; the worker encodes it to FLAC.
+RECORDING_TEMP_SUFFIX = ".recording.wav"
+
 
 # --- UI Default Strings ---
 DEFAULT_PROJECT_NAME = "無題のプロジェクト"
@@ -95,7 +103,6 @@ AUDIO_BITRATE = "64k"
 AUDIO_RATE = "16000"
 AUDIO_CHANNELS = "1"
 MIN_AUDIO_DURATION_SEC = 0.1
-MIN_AUDIO_FILESIZE_BYTES = 4096
 AUDIO_TRIM_END_DURATION_SEC = 0.2
 
 # --- Recording Settings ---

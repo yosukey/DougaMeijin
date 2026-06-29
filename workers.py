@@ -23,7 +23,7 @@ from utils import (
     get_audio_stream_info, FFprobeError, get_data_storage_path
 )
 from config import (
-    MIN_AUDIO_FILESIZE_BYTES, AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC,
+    AUDIO_RATE, AUDIO_TRIM_END_DURATION_SEC,
     MIN_RECORDING_DURATION_SEC, MIN_AUDIO_DURATION_SEC,
     GITHUB_REPO_ID, APP_INTERNAL_NAME, APP_VERSION,
     FFMPEG_INSTALL_DIR, FFMPEG_API_URL, FFMPEG_TARGET_ZIP_FILENAME,
@@ -118,33 +118,46 @@ class AudioProcessingWorker(QObject):
     finished = Signal(str, str, float, object)  # page_id, rel_path, duration, waveform_data
     error = Signal(str, str)                    # page_id, error_message
 
-    def __init__(self, work_dir: str, audio_path: str, widget_width: int, page_id: str):
+    def __init__(self, work_dir: str, input_path: str, output_path: str, widget_width: int, page_id: str):
         super().__init__()
         self.work_dir = Path(work_dir)
-        self.audio_path = Path(audio_path)
+        self.input_path = Path(input_path)      # transient recorded WAV
+        self.output_path = Path(output_path)    # canonical FLAC
         self.widget_width = widget_width
         self.page_id = page_id
 
     def process(self):
-        temp_work_path = self.audio_path.with_name(self.audio_path.stem + "_processing.wav")
-        
+        temp_processing = self.output_path.with_name(self.output_path.stem + "_processing.flac")
+
         try:
-            if not self.audio_path.exists() or self.audio_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
+            if not self.input_path.exists():
+                raise RuntimeError("録音ファイルが見つかりません。録音に失敗した可能性があります。")
+
+            if audio_duration_seconds(str(self.input_path)) < MIN_AUDIO_DURATION_SEC:
                 raise RuntimeError("録音に失敗したか、音声が短すぎます。")
-            
-            if not resample_audio(str(self.audio_path), str(temp_work_path), int(AUDIO_RATE)):
-                logger.warning("Resampling/Normalization failed, working with copy of original.")
-                shutil.copy2(self.audio_path, temp_work_path)
-            
-            original_duration = audio_duration_seconds(str(temp_work_path))
-            
+
+            if not resample_audio(str(self.input_path), str(temp_processing), int(AUDIO_RATE)):
+                # FFmpeg unavailable/failed: keep the take as WAV so nothing is lost.
+                # Readers tolerate WAV, and the next project load migrates it to FLAC.
+                logger.warning("Resampling/Normalization failed. Falling back to storing the take as WAV.")
+                fallback_path = self.output_path.with_suffix(".wav")
+                shutil.move(str(self.input_path), str(fallback_path))
+
+                rel_path_posix = fallback_path.relative_to(self.work_dir).as_posix()
+                duration = audio_duration_seconds(str(fallback_path))
+                waveform_data = load_waveform_data(str(fallback_path), self.widget_width)
+                self.finished.emit(self.page_id, rel_path_posix, duration, waveform_data)
+                return
+
+            original_duration = audio_duration_seconds(str(temp_processing))
+
             if original_duration > AUDIO_TRIM_END_DURATION_SEC:
-                temp_trim_path = self.audio_path.with_name(self.audio_path.stem + "_trimming.wav")
-                
+                temp_trim_path = self.output_path.with_name(self.output_path.stem + "_trimming.flac")
+
                 # Y2 comment:
                 # Trim the very end of the audio clip. This is to remove the audible "click"
-                if trim_audio_end(str(temp_work_path), str(temp_trim_path), AUDIO_TRIM_END_DURATION_SEC):
-                    temp_trim_path.replace(temp_work_path)
+                if trim_audio_end(str(temp_processing), str(temp_trim_path), AUDIO_TRIM_END_DURATION_SEC):
+                    temp_trim_path.replace(temp_processing)
                     logger.info("Successfully trimmed audio end.")
                 else:
                     logger.warning("Trimming failed, keeping untrimmed version.")
@@ -154,37 +167,49 @@ class AudioProcessingWorker(QObject):
                         except OSError:
                             pass
 
-            temp_work_path.replace(self.audio_path)
-            logger.info(f"Audio processing complete for {self.audio_path.name}")
+            if self.output_path.exists():
+                self.output_path.unlink()
+            temp_processing.replace(self.output_path)
 
-            audio_rel_path = self.audio_path.relative_to(self.work_dir)
-            rel_path_posix = audio_rel_path.as_posix()
-            duration = audio_duration_seconds(str(self.audio_path))
-            waveform_data = load_waveform_data(str(self.audio_path), self.widget_width)
+            # Remove the transient recorded WAV.
+            if self.input_path.exists():
+                try:
+                    self.input_path.unlink()
+                except OSError:
+                    pass
+
+            logger.info(f"Audio processing complete for {self.output_path.name}")
+
+            rel_path_posix = self.output_path.relative_to(self.work_dir).as_posix()
+            duration = audio_duration_seconds(str(self.output_path))
+            waveform_data = load_waveform_data(str(self.output_path), self.widget_width)
             self.finished.emit(self.page_id, rel_path_posix, duration, waveform_data)
         except Exception as e:
             self.error.emit(self.page_id, str(e))
-            if self.audio_path.exists():
-                try: self.audio_path.unlink()
-                except OSError: pass
+            for p in (temp_processing, self.input_path):
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
 
 class AudioImportWorker(QObject):
     finished = Signal(str, str, float, object) # page_id, rel_path, duration, waveform_data
     error = Signal(str, str)                   # page_id, error_message
 
-    def __init__(self, work_dir: str, source_path: str, target_wav_path: str, widget_width: int, page_id: str):
+    def __init__(self, work_dir: str, source_path: str, target_path: str, widget_width: int, page_id: str):
         super().__init__()
         self.work_dir = Path(work_dir)
         self.source_path = Path(source_path)
-        self.target_wav_path = Path(target_wav_path)
+        self.target_path = Path(target_path)    # canonical FLAC
         self.widget_width = widget_width
         self.page_id = page_id
 
     def process(self):
-        temp_wav_path = self.target_wav_path.with_suffix(".wav.tmp")
+        temp_path = self.target_path.with_name(self.target_path.stem + ".importing.flac")
         
         try:
-            if not resample_audio(str(self.source_path), str(temp_wav_path), int(AUDIO_RATE)):
+            if not resample_audio(str(self.source_path), str(temp_path), int(AUDIO_RATE)):
                 codec_name = '不明'
                 sample_rate = 'N/A'
                 try:
@@ -203,7 +228,7 @@ class AudioImportWorker(QObject):
                 )
                 raise RuntimeError(error_detail)
             
-            final_duration = get_media_duration_seconds(str(temp_wav_path))
+            final_duration = get_media_duration_seconds(str(temp_path))
 
             if final_duration < MIN_RECORDING_DURATION_SEC:
                 raise RuntimeError(f"音声ファイルが短すぎます。{MIN_RECORDING_DURATION_SEC:.1f}秒以上のファイルが必要です。（検出された長さ: {final_duration:.2f}秒）")
@@ -212,27 +237,22 @@ class AudioImportWorker(QObject):
                  raise RuntimeError(f"音声処理後に有効な音声データを取得できませんでした。（検出された長さ: {final_duration:.2f}秒）")
 
 
-            if self.target_wav_path.exists():
-                self.target_wav_path.unlink()
-            temp_wav_path.rename(self.target_wav_path)
+            if self.target_path.exists():
+                self.target_path.unlink()
+            temp_path.rename(self.target_path)
             
-            target_rel_path = self.target_wav_path.relative_to(self.work_dir)
+            target_rel_path = self.target_path.relative_to(self.work_dir)
             rel_path_posix = target_rel_path.as_posix()
             
-            waveform_data = load_waveform_data(str(self.target_wav_path), self.widget_width)
+            waveform_data = load_waveform_data(str(self.target_path), self.widget_width)
             
             self.finished.emit(self.page_id, rel_path_posix, final_duration, waveform_data)
 
         except Exception as e:
             self.error.emit(self.page_id, str(e))
-            if temp_wav_path.exists():
+            if temp_path.exists():
                 try:
-                    temp_wav_path.unlink()
-                except OSError:
-                    pass
-            if self.target_wav_path.exists() and self.target_wav_path.stat().st_size < MIN_AUDIO_FILESIZE_BYTES:
-                try:
-                    self.target_wav_path.unlink()
+                    temp_path.unlink()
                 except OSError:
                     pass
 
@@ -385,7 +405,7 @@ class AssetExportWorker(QObject):
                     source_path = self.work_dir / audio_rel
                     if source_path.exists():
                         try:
-                            dest_path = self.dest_dir / f"ページ{page_number}.wav"
+                            dest_path = self.dest_dir / f"ページ{page_number}{source_path.suffix}"
                             shutil.copy2(source_path, dest_path)
                             exported_count += 1
                         except (IOError, OSError) as e:
