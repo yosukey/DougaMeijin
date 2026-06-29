@@ -1060,9 +1060,8 @@ class MainWindow(QMainWindow):
         row = self.list_pages.currentRow()
         if row < 0 or not self._project or not self._work_dir: return None
         page = self._project.pages[row]
-        
-        audio_filename = f"{page.page_id}.wav"
 
-        audio_dir = self._work_dir / DIR_AUDIO
-        audio_dir.mkdir(exist_ok=True)
-        return str(audio_dir / audio_filename)
+        if not page.audio:
+            return None
+
+        return str(self._work_dir / page.audio)

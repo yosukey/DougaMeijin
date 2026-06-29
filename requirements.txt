@@ -3,3 +3,4 @@ numpy
 pypdfium2
 Pillow
 psutil
+soundfile
