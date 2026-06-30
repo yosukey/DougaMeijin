@@ -99,8 +99,14 @@ class PageListManager:
         if not selected_items or not main._project or not main._work_dir: return
         reply = QMessageBox.question(main, "ページの削除", f"{len(selected_items)}個のページを削除しますか？\nこの操作は元に戻せません。", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No: return
-        pages_to_delete = [main._project.pages[self.list_widget.row(item)] for item in selected_items]
-        deleted_ids = {p.page_id for p in pages_to_delete}
+        deleted_ids = {
+            item.data(Qt.UserRole + 3)
+            for item in selected_items
+            if item.data(Qt.UserRole + 3) is not None
+        }
+        pages_to_delete = [p for p in main._project.pages if p.page_id in deleted_ids]
+        if not pages_to_delete:
+            return
 
         logger.info(f"Removing {len(pages_to_delete)} pages: {sorted(deleted_ids)}")
         remove_pages_from_project(str(main._work_dir), main._project.pages, pages_to_delete)
@@ -126,7 +132,8 @@ class PageListManager:
         # Safety: keep any pages not represented in the view (should not happen).
         new_order.extend(id_to_page.values())
 
-        if [p.page_id for p in new_order] == [p.page_id for p in main._project.pages]:
+        counts_match = self.list_widget.count() == len(main._project.pages)
+        if counts_match and [p.page_id for p in new_order] == [p.page_id for p in main._project.pages]:
             return
 
         current_page_id = None
