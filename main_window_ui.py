@@ -242,6 +242,7 @@ class UiBuilder:
         main_win.list_pages.setIconSize(QSize(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT))
         main_win.list_pages.setSelectionMode(QListWidget.SingleSelection)
         main_win.list_pages.setDragDropMode(QListWidget.InternalMove)
+        main_win.list_pages.setDefaultDropAction(Qt.MoveAction)
         main_win.list_pages.setContextMenuPolicy(Qt.CustomContextMenu)
 
         # --- プレビュー ---
